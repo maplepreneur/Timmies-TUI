@@ -30,6 +30,7 @@ const (
 	modeConfirmDelete
 	modeEditClient
 	modeEditType
+	modeSessionForm
 )
 
 type inputAction int
@@ -164,6 +165,10 @@ type Model struct {
 	editTypeStep    int
 	editTypeName    string
 	editTypeBill    bool
+
+	sessionFormStep   int
+	sessionFormType   int // index into typeDetails
+	sessionFormClient int // index into clientNames (0 = none, 1+ = clientNames[i-1])
 }
 
 var (
@@ -265,6 +270,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditClientKey(msg)
 		case modeEditType:
 			return m.updateEditTypeKey(msg)
+		case modeSessionForm:
+			return m.updateSessionFormKey(msg)
 		}
 	}
 	return m, nil
@@ -293,7 +300,7 @@ func (m Model) updateMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.enterTypeForm()
 		return m, nil
 	case "s":
-		m.enterInput(actionStartSession, "@client type note...")
+		m.enterSessionForm()
 		return m, nil
 	case "d":
 		m.mode = modeDashboard
@@ -315,7 +322,7 @@ func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
 	case 1:
 		m.enterTypeForm()
 	case 2:
-		m.enterInput(actionStartSession, "@client type note...")
+		m.enterSessionForm()
 	case 3:
 		m.mode = modeDashboard
 	case 4:
@@ -340,7 +347,7 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.enterTypeForm()
 		return m, nil
 	case "s":
-		m.enterInput(actionStartSession, "@client type note...")
+		m.enterSessionForm()
 		return m, nil
 	case "x":
 		if _, err := m.service.Stop(); err != nil {
@@ -447,6 +454,21 @@ func (m *Model) enterTypeForm() {
 	m.message = ""
 }
 
+func (m *Model) enterSessionForm() {
+	m.refreshDashboard()
+	if len(m.typeDetails) == 0 {
+		m.message = "create a tracking type first"
+		return
+	}
+	m.mode = modeSessionForm
+	m.sessionFormStep = 0
+	m.sessionFormType = 0
+	m.sessionFormClient = 0
+	m.input.SetValue("")
+	m.input.Placeholder = "optional note"
+	m.message = ""
+}
+
 func (m Model) updateTypeFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.typeFormStep {
 	case 0:
@@ -539,6 +561,89 @@ func (m Model) submitTypeForm(hourlyRate float64) (tea.Model, tea.Cmd) {
 	m.input.SetValue("")
 	m.refreshDashboard()
 	m.syncTables()
+	return m, nil
+}
+
+func (m Model) updateSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.sessionFormStep {
+	case 0: // select tracking type
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			return m, nil
+		case "up", "k":
+			if m.sessionFormType > 0 {
+				m.sessionFormType--
+			}
+			return m, nil
+		case "down", "j":
+			if m.sessionFormType < len(m.typeDetails)-1 {
+				m.sessionFormType++
+			}
+			return m, nil
+		case "enter":
+			m.sessionFormStep = 1
+			m.sessionFormClient = 0
+			return m, nil
+		}
+		return m, nil
+	case 1: // select client
+		clientCount := len(m.clientNames) + 1 // +1 for "(none)"
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			return m, nil
+		case "up", "k":
+			if m.sessionFormClient > 0 {
+				m.sessionFormClient--
+			}
+			return m, nil
+		case "down", "j":
+			if m.sessionFormClient < clientCount-1 {
+				m.sessionFormClient++
+			}
+			return m, nil
+		case "enter":
+			m.sessionFormStep = 2
+			m.input.SetValue("")
+			m.input.Placeholder = "optional note"
+			m.input.Focus()
+			return m, nil
+		}
+		return m, nil
+	case 2: // note input
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			note := strings.TrimSpace(m.input.Value())
+			typeName := m.typeDetails[m.sessionFormType].Name
+			clientName := ""
+			if m.sessionFormClient > 0 {
+				clientName = m.clientNames[m.sessionFormClient-1]
+			}
+			if clientName == "" {
+				m.message = "a client is required to start a session"
+				return m, nil
+			}
+			if _, err := m.service.Start(clientName, typeName, note); err != nil {
+				m.message = err.Error()
+			} else {
+				m.message = fmt.Sprintf("started session: @%s · %s", clientName, typeName)
+			}
+			m.mode = modeMenu
+			m.input.SetValue("")
+			m.refreshDashboard()
+			m.syncTables()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	}
 	return m, nil
 }
 
@@ -1179,6 +1284,8 @@ func (m Model) View() string {
 		return m.viewEditClient()
 	case modeEditType:
 		return m.viewEditType()
+	case modeSessionForm:
+		return m.viewSessionForm()
 	default:
 		return m.viewDashboard()
 	}
@@ -1500,6 +1607,78 @@ func (m Model) viewEditType() string {
 	panel := panelStyle.Width(w).Render(
 		titleStyle.Render("Edit tracking type") + "\n" +
 			formLabelStyle.Render("Editing: ") + formAnswerStyle.Render(m.editTypeOldName) + "\n\n" +
+			steps + "\n\n" +
+			inputArea + "\n" +
+			mutedStyle.Render("Esc to cancel"),
+	)
+
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel + msg)
+}
+
+func (m Model) viewSessionForm() string {
+	w := maxInt(40, m.width-4)
+
+	stepType := formLabelStyle.Render("  1. Tracking type")
+	stepClient := formLabelStyle.Render("  2. Client")
+	stepNote := formLabelStyle.Render("  3. Note")
+
+	var inputArea string
+
+	switch m.sessionFormStep {
+	case 0:
+		stepType = formActiveStyle.Render("▸ 1. Tracking type")
+		var lines []string
+		for i, td := range m.typeDetails {
+			label := td.Name
+			if td.IsBillable {
+				label += fmt.Sprintf(" ($%.0f/h)", td.HourlyRate)
+			}
+			if i == m.sessionFormType {
+				lines = append(lines, formSelectedStyle.Render("  ▸ "+label))
+			} else {
+				lines = append(lines, formLabelStyle.Render("    "+label))
+			}
+		}
+		inputArea = strings.Join(lines, "\n") + "\n" +
+			mutedStyle.Render("↑/↓ to select · Enter to confirm")
+	case 1:
+		selType := m.typeDetails[m.sessionFormType]
+		stepType = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(selType.Name)
+		stepClient = formActiveStyle.Render("▸ 2. Client")
+		options := []string{"(none)"}
+		for _, c := range m.clientNames {
+			options = append(options, "@"+c)
+		}
+		var lines []string
+		for i, opt := range options {
+			if i == m.sessionFormClient {
+				lines = append(lines, formSelectedStyle.Render("  ▸ "+opt))
+			} else {
+				lines = append(lines, formLabelStyle.Render("    "+opt))
+			}
+		}
+		inputArea = strings.Join(lines, "\n") + "\n" +
+			mutedStyle.Render("↑/↓ to select · Enter to confirm")
+	case 2:
+		selType := m.typeDetails[m.sessionFormType]
+		stepType = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(selType.Name)
+		clientLabel := "(none)"
+		if m.sessionFormClient > 0 {
+			clientLabel = "@" + m.clientNames[m.sessionFormClient-1]
+		}
+		stepClient = formLabelStyle.Render("  2. ") + formAnswerStyle.Render(clientLabel)
+		stepNote = formActiveStyle.Render("▸ 3. Note")
+		inputArea = m.input.View()
+	}
+
+	steps := lipgloss.JoinVertical(lipgloss.Left, stepType, stepClient, stepNote)
+
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Start session") + "\n\n" +
 			steps + "\n\n" +
 			inputArea + "\n" +
 			mutedStyle.Render("Esc to cancel"),
