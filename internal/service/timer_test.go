@@ -57,3 +57,25 @@ func TestResumeCreatesNewSegment(t *testing.T) {
 		t.Fatalf("expected active status, got %q", active.Status)
 	}
 }
+
+func TestBrandingSettingsRoundTrip(t *testing.T) {
+	svc := newTestService(t)
+
+	if err := svc.SetBrandingDisplayName("Maple Entrepreneur"); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
+	if err := svc.SetBrandingLogoPath("/tmp/logo.png"); err != nil {
+		t.Fatalf("set logo path: %v", err)
+	}
+
+	branding, err := svc.BrandingSettings()
+	if err != nil {
+		t.Fatalf("get branding settings: %v", err)
+	}
+	if branding.DisplayName != "Maple Entrepreneur" {
+		t.Fatalf("expected display name, got %q", branding.DisplayName)
+	}
+	if branding.LogoPath != "/tmp/logo.png" {
+		t.Fatalf("expected logo path, got %q", branding.LogoPath)
+	}
+}

@@ -1,6 +1,6 @@
-# Install Chrono
+# Install Timmies TUI
 
-This is the quickest way to get `chrono` running locally.
+This is the quickest way to get `timmies` running locally.
 
 ## Prerequisites
 
@@ -17,15 +17,15 @@ cd chrono
 ## 2) Build the binary
 
 ```bash
-go build -o chrono ./cmd/chrono
+go build -o timmies ./cmd/timmies
 ```
 
-This creates a local executable named `chrono`.
+This creates a local executable named `timmies`.
 
 ## 3) (Optional) Install globally
 
 ```bash
-go install ./cmd/chrono
+go install ./cmd/timmies
 ```
 
 After this, make sure your Go bin path is in `PATH` (usually `~/go/bin`).
@@ -33,17 +33,17 @@ After this, make sure your Go bin path is in `PATH` (usually `~/go/bin`).
 ## 4) Verify install
 
 ```bash
-./chrono --help
+./timmies --help
 # or, if installed globally:
-chrono --help
+timmies --help
 ```
 
 ## Database location
 
-By default, Chrono uses `chrono.db` in your current directory.
+By default, Timmies TUI uses `tim.db` in your current directory.
 
 You can point to a custom DB file with:
 
 ```bash
-chrono --db /path/to/chrono.db status
+timmies --db /path/to/tim.db status
 ```

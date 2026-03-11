@@ -9,9 +9,11 @@ type Client struct {
 }
 
 type TrackingType struct {
-	ID        int64
-	Name      string
-	CreatedAt time.Time
+	ID         int64
+	Name       string
+	IsBillable bool
+	HourlyRate float64
+	CreatedAt  time.Time
 }
 
 type Session struct {
@@ -24,4 +26,12 @@ type Session struct {
 	DurationSec    int64
 	Status         string
 	CreatedAt      time.Time
+}
+
+type SessionResource struct {
+	ID           int64
+	SessionID    int64
+	ResourceName string
+	CostAmount   float64
+	CreatedAt    time.Time
 }

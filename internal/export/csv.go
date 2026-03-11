@@ -18,7 +18,7 @@ func WriteReportCSV(path string, rows []sqlite.ReportRow) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	if err := w.Write([]string{"session_id", "client", "tracking_type", "note", "started_at", "stopped_at", "duration_seconds"}); err != nil {
+	if err := w.Write([]string{"session_id", "client", "tracking_type", "is_billable", "hourly_rate", "billable_amount", "resource_cost", "monetary_total", "note", "started_at", "stopped_at", "duration_seconds"}); err != nil {
 		return err
 	}
 	for _, r := range rows {
@@ -30,6 +30,11 @@ func WriteReportCSV(path string, rows []sqlite.ReportRow) error {
 			strconv.FormatInt(r.SessionID, 10),
 			r.ClientName,
 			r.TrackingTypeName,
+			strconv.FormatBool(r.IsBillable),
+			strconv.FormatFloat(r.HourlyRate, 'f', 2, 64),
+			strconv.FormatFloat(r.BillableAmount, 'f', 2, 64),
+			strconv.FormatFloat(r.ResourceCostTotal, 'f', 2, 64),
+			strconv.FormatFloat(r.MonetaryTotal, 'f', 2, 64),
 			r.Note,
 			r.StartedAt.Format("2006-01-02T15:04:05Z07:00"),
 			stopped,

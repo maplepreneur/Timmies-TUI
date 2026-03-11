@@ -26,10 +26,34 @@ func (s *TimerService) Resume() (int64, error) {
 	return s.store.ResumeLatest(time.Now().UTC())
 }
 
+func (s *TimerService) ResumeSession(sessionID int64) (int64, error) {
+	return s.store.ResumePausedSession(sessionID, time.Now().UTC())
+}
+
 func (s *TimerService) Status() (*sqlite.SessionView, error) {
 	return s.store.GetActiveSession()
 }
 
-func (s *TimerService) Report(client string, from, to time.Time) ([]sqlite.ReportRow, int64, error) {
+func (s *TimerService) AddSessionResource(sessionID int64, resourceName string, costAmount float64) error {
+	return s.store.AddSessionResource(sessionID, resourceName, costAmount)
+}
+
+func (s *TimerService) ListSessionResources(sessionID int64) ([]sqlite.SessionResourceView, error) {
+	return s.store.ListSessionResources(sessionID)
+}
+
+func (s *TimerService) Report(client string, from, to time.Time) ([]sqlite.ReportRow, sqlite.ReportSummary, error) {
 	return s.store.ReportByClient(client, from, to)
+}
+
+func (s *TimerService) SetBrandingDisplayName(name string) error {
+	return s.store.SetBrandingDisplayName(name)
+}
+
+func (s *TimerService) SetBrandingLogoPath(path string) error {
+	return s.store.SetBrandingLogoPath(path)
+}
+
+func (s *TimerService) BrandingSettings() (sqlite.BrandingSettings, error) {
+	return s.store.GetBrandingSettings()
 }
