@@ -1,6 +1,6 @@
 # Timmies TUI
 
-`timmies` is a Go CLI/TUI time tracker using Charm libraries.
+`timmies` is an Open-Source Go CLI/TUI time tracker using Charm libraries.
 
 Created with ❤️ by **Voxel North Technologies Inc.**
 
