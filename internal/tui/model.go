@@ -1163,7 +1163,7 @@ func renderTimmiesLogo() string {
 	leaf := leafStyle.Render
 	txt := logoText.Render
 	lines := []string{
-		leaf("             /\\"),
+		leaf("              /\\"),
 		leaf("            _/  \\_"),
 		leaf("           /      \\"),
 		leaf("   _      /        \\      _"),

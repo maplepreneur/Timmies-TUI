@@ -539,7 +539,7 @@ func cliLogo() string {
 	dim := "\x1b[2m"
 	reset := "\x1b[0m"
 	return strings.Join([]string{
-		red + "             /\\" + reset,
+		red + "              /\\" + reset,
 		red + "            _/  \\_" + reset,
 		red + "           /      \\" + reset,
 		red + "   _      /        \\      _" + reset,
