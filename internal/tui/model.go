@@ -287,7 +287,7 @@ func (m Model) updateMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.menuCursor < 4 {
+		if m.menuCursor < 6 {
 			m.menuCursor++
 		}
 		return m, nil
@@ -301,6 +301,12 @@ func (m Model) updateMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "s":
 		m.enterSessionForm()
+		return m, nil
+	case "x":
+		m.stopActiveSession()
+		return m, nil
+	case "r":
+		m.resumeLatestSession()
 		return m, nil
 	case "d":
 		m.mode = modeDashboard
@@ -324,11 +330,35 @@ func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
 	case 2:
 		m.enterSessionForm()
 	case 3:
-		m.mode = modeDashboard
+		m.stopActiveSession()
 	case 4:
+		m.resumeLatestSession()
+	case 5:
+		m.mode = modeDashboard
+	case 6:
 		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
 	}
 	return m, nil
+}
+
+func (m *Model) stopActiveSession() {
+	if _, err := m.service.Stop(); err != nil {
+		m.message = err.Error()
+	} else {
+		m.message = "stopped active session"
+	}
+	m.refreshDashboard()
+	m.syncTables()
+}
+
+func (m *Model) resumeLatestSession() {
+	if _, err := m.service.Resume(); err != nil {
+		m.message = err.Error()
+	} else {
+		m.message = "resumed latest stopped session as new segment"
+	}
+	m.refreshDashboard()
+	m.syncTables()
 }
 
 func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -350,22 +380,10 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.enterSessionForm()
 		return m, nil
 	case "x":
-		if _, err := m.service.Stop(); err != nil {
-			m.message = err.Error()
-		} else {
-			m.message = "stopped active session"
-		}
-		m.refreshDashboard()
-		m.syncTables()
+		m.stopActiveSession()
 		return m, nil
 	case "r":
-		if _, err := m.service.Resume(); err != nil {
-			m.message = err.Error()
-		} else {
-			m.message = "resumed latest stopped session as new segment"
-		}
-		m.refreshDashboard()
-		m.syncTables()
+		m.resumeLatestSession()
 		return m, nil
 	case "p":
 		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
@@ -1306,6 +1324,8 @@ func (m Model) viewMenu() string {
 		"Add client",
 		"Add tracking type",
 		"Start session",
+		"Stop session",
+		"Resume latest",
 		"Open dashboard",
 		"Run report",
 	}
@@ -1368,7 +1388,7 @@ func (m Model) viewMenu() string {
 	}
 	if m.showOverview {
 		overview := renderMarkdown(
-			"### Management menu\n\n- Create clients and tracking types from this page.\n- Tracking types now use a guided form: press **t** to add a type.\n- Start sessions with `@client type note...`.\n- Press **d** for dashboard, **p** for reports, **m** to return here.\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
+			"### Management menu\n\n- Create clients and tracking types from this page.\n- Tracking types now use a guided form: press **t** to add a type.\n- Start sessions with **s**, stop with **x**, resume latest with **r**.\n- Press **d** for dashboard, **p** for reports, **m** to return here.\n- In the dashboard, press **D** on a paused session to delete it.\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
 			maxInt(40, m.width-6),
 		)
 		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
@@ -1431,7 +1451,7 @@ func (m Model) viewDashboard() string {
 
 	if m.showOverview {
 		overview := renderMarkdown(
-			"### Overview\n\n- Use **Tab** to move focus between dashboard sections.\n- Press **e** to edit the selected client or type. Press **D** (shift-D) to delete.\n- Press **c** to add a resource cost to the active session or selected paused row.\n- In **Paused/stopped sessions**, press **Enter** to resume the selected row.\n- Use **p** for reports with explicit dates (`@client 2026-01-01 2026-01-31`) or relative periods (`@client last 2 weeks`, `@client this year`).\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
+			"### Overview\n\n- Use **Tab** to move focus between dashboard sections.\n- Press **x** to stop the active session, **r** to resume the latest stopped session.\n- Press **e** to edit the selected client or type. Press **D** (shift-D) to delete.\n- Press **c** to add a resource cost to the active session or selected paused row.\n- In **Paused/stopped sessions**, press **Enter** to resume the selected row, **D** to delete it.\n- Use **p** for reports with explicit dates (`@client 2026-01-01 2026-01-31`) or relative periods (`@client last 2 weeks`, `@client this year`).\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
 			maxInt(40, m.width-6),
 		)
 		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
