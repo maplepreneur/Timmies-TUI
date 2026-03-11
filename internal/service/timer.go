@@ -57,3 +57,23 @@ func (s *TimerService) SetBrandingLogoPath(path string) error {
 func (s *TimerService) BrandingSettings() (sqlite.BrandingSettings, error) {
 	return s.store.GetBrandingSettings()
 }
+
+func (s *TimerService) RenameClient(oldName, newName string) error {
+	return s.store.RenameClient(oldName, newName)
+}
+
+func (s *TimerService) DeleteClient(name string) error {
+	return s.store.DeleteClient(name)
+}
+
+func (s *TimerService) UpdateTrackingType(oldName, newName string, isBillable bool, hourlyRate float64) error {
+	return s.store.UpdateTrackingType(oldName, newName, isBillable, hourlyRate)
+}
+
+func (s *TimerService) DeleteTrackingType(name string) error {
+	return s.store.DeleteTrackingType(name)
+}
+
+func (s *TimerService) DeleteSession(id int64) error {
+	return s.store.DeleteSession(id)
+}

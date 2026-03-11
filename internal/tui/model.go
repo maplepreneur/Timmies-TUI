@@ -259,6 +259,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateReportKey(msg)
 		case modeTypeForm:
 			return m.updateTypeFormKey(msg)
+		case modeConfirmDelete:
+			return m.updateConfirmDeleteKey(msg)
+		case modeEditClient:
+			return m.updateEditClientKey(msg)
+		case modeEditType:
+			return m.updateEditTypeKey(msg)
 		}
 	}
 	return m, nil
@@ -365,6 +371,10 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.showOverview = !m.showOverview
 		return m, nil
+	case "e":
+		return m.startEditFromDashboard()
+	case "D":
+		return m.startDeleteFromDashboard()
 	case "enter":
 		if m.focus == focusPaused {
 			return m.resumeSelectedPaused()
@@ -696,6 +706,278 @@ func (m Model) resumeSelectedPaused() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) startEditFromDashboard() (tea.Model, tea.Cmd) {
+	switch m.focus {
+	case focusClients:
+		rows := m.clientsTable.Rows()
+		idx := m.clientsTable.Cursor()
+		if idx < 0 || idx >= len(rows) {
+			m.message = "select a client to edit"
+			return m, nil
+		}
+		oldName := rows[idx][0]
+		m.editClientOldName = oldName
+		m.mode = modeEditClient
+		m.input.SetValue(oldName)
+		m.input.Placeholder = "new client name"
+		m.input.Focus()
+		m.message = ""
+		return m, nil
+	case focusTypes:
+		rows := m.typesTable.Rows()
+		idx := m.typesTable.Cursor()
+		if idx < 0 || idx >= len(rows) {
+			m.message = "select a type to edit"
+			return m, nil
+		}
+		oldName := rows[idx][0]
+		m.editTypeOldName = oldName
+		m.editTypeStep = 0
+		// pre-fill from typeDetails
+		for _, td := range m.typeDetails {
+			if td.Name == oldName {
+				m.editTypeName = td.Name
+				m.editTypeBill = td.IsBillable
+				break
+			}
+		}
+		m.mode = modeEditType
+		m.input.SetValue(oldName)
+		m.input.Placeholder = "type name"
+		m.input.Focus()
+		m.message = ""
+		return m, nil
+	}
+	m.message = "edit is available for Clients and Types tables"
+	return m, nil
+}
+
+func (m Model) startDeleteFromDashboard() (tea.Model, tea.Cmd) {
+	switch m.focus {
+	case focusClients:
+		rows := m.clientsTable.Rows()
+		idx := m.clientsTable.Cursor()
+		if idx < 0 || idx >= len(rows) {
+			m.message = "select a client to delete"
+			return m, nil
+		}
+		name := rows[idx][0]
+		count, err := m.store.CountSessionsByClient(name)
+		if err != nil {
+			m.message = err.Error()
+			return m, nil
+		}
+		m.confirmMsg = fmt.Sprintf("⚠ Delete client '%s' and %d session(s)?", name, count)
+		m.confirmYes = false
+		m.confirmAction = func() {
+			if err := m.store.DeleteClient(name); err != nil {
+				m.message = err.Error()
+			} else {
+				m.message = fmt.Sprintf("deleted client: %s", name)
+			}
+		}
+		m.mode = modeConfirmDelete
+		return m, nil
+	case focusTypes:
+		rows := m.typesTable.Rows()
+		idx := m.typesTable.Cursor()
+		if idx < 0 || idx >= len(rows) {
+			m.message = "select a type to delete"
+			return m, nil
+		}
+		name := rows[idx][0]
+		count, err := m.store.CountSessionsByTrackingType(name)
+		if err != nil {
+			m.message = err.Error()
+			return m, nil
+		}
+		m.confirmMsg = fmt.Sprintf("⚠ Delete tracking type '%s' and %d session(s)?", name, count)
+		m.confirmYes = false
+		m.confirmAction = func() {
+			if err := m.store.DeleteTrackingType(name); err != nil {
+				m.message = err.Error()
+			} else {
+				m.message = fmt.Sprintf("deleted type: %s", name)
+			}
+		}
+		m.mode = modeConfirmDelete
+		return m, nil
+	case focusPaused:
+		if len(m.paused) == 0 {
+			m.message = "no sessions to delete"
+			return m, nil
+		}
+		idx := m.pausedTable.Cursor()
+		if idx < 0 || idx >= len(m.paused) {
+			m.message = "select a session to delete"
+			return m, nil
+		}
+		p := m.paused[idx]
+		m.confirmMsg = fmt.Sprintf("⚠ Delete session %d (@%s · %s)?", p.ID, p.ClientName, p.TrackingTypeName)
+		m.confirmYes = false
+		m.confirmAction = func() {
+			if err := m.store.DeleteSession(p.ID); err != nil {
+				m.message = err.Error()
+			} else {
+				m.message = fmt.Sprintf("deleted session %d", p.ID)
+			}
+		}
+		m.mode = modeConfirmDelete
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updateConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.mode = modeDashboard
+		m.message = ""
+		return m, nil
+	case "up", "down", "k", "j", "left", "right", "h", "l", "tab":
+		m.confirmYes = !m.confirmYes
+		return m, nil
+	case "y":
+		m.confirmYes = true
+		return m, nil
+	case "n":
+		m.confirmYes = false
+		return m, nil
+	case "enter":
+		if m.confirmYes && m.confirmAction != nil {
+			m.confirmAction()
+		} else {
+			m.message = "cancelled"
+		}
+		m.mode = modeDashboard
+		m.confirmAction = nil
+		m.refreshDashboard()
+		m.syncTables()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updateEditClientKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeDashboard
+		m.input.SetValue("")
+		m.message = ""
+		return m, nil
+	case "enter":
+		newName := strings.TrimSpace(m.input.Value())
+		if newName == "" {
+			m.message = "client name is required"
+			return m, nil
+		}
+		if err := m.store.RenameClient(m.editClientOldName, newName); err != nil {
+			m.message = err.Error()
+		} else {
+			m.message = fmt.Sprintf("renamed client: %s → %s", m.editClientOldName, newName)
+		}
+		m.mode = modeDashboard
+		m.input.SetValue("")
+		m.refreshDashboard()
+		m.syncTables()
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m Model) updateEditTypeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.editTypeStep {
+	case 0: // name
+		switch msg.String() {
+		case "esc":
+			m.mode = modeDashboard
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			name := strings.TrimSpace(m.input.Value())
+			if name == "" {
+				m.message = "type name is required"
+				return m, nil
+			}
+			m.editTypeName = name
+			m.editTypeStep = 1
+			m.message = ""
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	case 1: // billable toggle
+		switch msg.String() {
+		case "esc":
+			m.mode = modeDashboard
+			return m, nil
+		case "up", "down", "k", "j", "y", "n":
+			m.editTypeBill = !m.editTypeBill
+			return m, nil
+		case "enter":
+			if m.editTypeBill {
+				m.editTypeStep = 2
+				m.input.SetValue("")
+				m.input.Placeholder = "hourly rate"
+				m.input.Focus()
+				m.message = ""
+			} else {
+				return m.submitEditType(0)
+			}
+			return m, nil
+		}
+		return m, nil
+	case 2: // rate
+		switch msg.String() {
+		case "esc":
+			m.mode = modeDashboard
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			rateStr := strings.TrimSpace(m.input.Value())
+			if rateStr == "" {
+				m.message = "hourly rate is required"
+				return m, nil
+			}
+			rate, err := strconv.ParseFloat(rateStr, 64)
+			if err != nil {
+				m.message = "invalid rate — enter a number"
+				return m, nil
+			}
+			if rate <= 0 {
+				m.message = "rate must be greater than 0"
+				return m, nil
+			}
+			return m.submitEditType(rate)
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+func (m Model) submitEditType(hourlyRate float64) (tea.Model, tea.Cmd) {
+	if err := m.store.UpdateTrackingType(m.editTypeOldName, m.editTypeName, m.editTypeBill, hourlyRate); err != nil {
+		m.message = err.Error()
+	} else {
+		m.message = fmt.Sprintf("updated type: %s", m.editTypeName)
+	}
+	m.mode = modeDashboard
+	m.input.SetValue("")
+	m.refreshDashboard()
+	m.syncTables()
+	return m, nil
+}
+
 func (m *Model) refreshDashboard() {
 	active, err := m.service.Status()
 	if err != nil {
@@ -817,10 +1099,13 @@ func (m *Model) applyResponsiveLayout() {
 		{Title: "Note", Width: maxInt(12, rightWidth-72)},
 	})
 
-	sectionHeight := maxInt(4, (maxInt(18, m.height)-9)/3)
+	// header (2) + active panel border+content (4) + footer (2) + border chrome (~6)
+	chrome := 14
+	availHeight := maxInt(12, m.height-chrome)
+	sectionHeight := maxInt(3, availHeight/3)
 	m.clientsTable.SetHeight(sectionHeight)
 	m.typesTable.SetHeight(sectionHeight)
-	m.pausedTable.SetHeight(maxInt(6, sectionHeight*2+1))
+	m.pausedTable.SetHeight(maxInt(4, sectionHeight))
 
 	m.reportViewport.Width = maxInt(20, m.width-6)
 	m.reportViewport.Height = maxInt(8, m.height-8)
@@ -879,19 +1164,24 @@ func renderMarkdown(markdown string, width int) string {
 }
 
 func (m Model) View() string {
-	if m.mode == modeMenu {
+	switch m.mode {
+	case modeMenu:
 		return m.viewMenu()
-	}
-	if m.mode == modeInput {
+	case modeInput:
 		return m.viewInput()
-	}
-	if m.mode == modeReportView {
+	case modeReportView:
 		return m.viewReport()
-	}
-	if m.mode == modeTypeForm {
+	case modeTypeForm:
 		return m.viewTypeForm()
+	case modeConfirmDelete:
+		return m.viewConfirmDelete()
+	case modeEditClient:
+		return m.viewEditClient()
+	case modeEditType:
+		return m.viewEditType()
+	default:
+		return m.viewDashboard()
 	}
-	return m.viewDashboard()
 }
 
 func (m Model) viewMenu() string {
@@ -982,7 +1272,7 @@ func (m Model) viewMenu() string {
 }
 
 func (m Model) viewDashboard() string {
-	header := titleStyle.Render("Timmies TUI") + "  " + mutedStyle.Render("dashboard")
+	header := titleStyle.Render("🍁 Timmies") + "  " + mutedStyle.Render("dashboard")
 	monthLabel := time.Now().UTC().Format("January 2006")
 	header = lipgloss.JoinVertical(lipgloss.Left, header, mutedStyle.Render("Current-month totals: "+monthLabel))
 
@@ -1034,13 +1324,13 @@ func (m Model) viewDashboard() string {
 
 	if m.showOverview {
 		overview := renderMarkdown(
-			"### Overview\n\n- Use **Tab** to move focus between dashboard sections.\n- Press **c** to add a resource cost to the active session or selected paused row.\n- In **Paused/stopped sessions**, press **Enter** to resume the selected row.\n- Use **p** for reports with explicit dates (`@client 2026-01-01 2026-01-31`) or relative periods (`@client last 2 weeks`, `@client this year`).\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
+			"### Overview\n\n- Use **Tab** to move focus between dashboard sections.\n- Press **e** to edit the selected client or type. Press **D** (shift-D) to delete.\n- Press **c** to add a resource cost to the active session or selected paused row.\n- In **Paused/stopped sessions**, press **Enter** to resume the selected row.\n- Use **p** for reports with explicit dates (`@client 2026-01-01 2026-01-31`) or relative periods (`@client last 2 weeks`, `@client this year`).\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
 			maxInt(40, m.width-6),
 		)
 		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
 	}
 
-	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, activePanel, body, footer))
+	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, header, activePanel, body, footer))
 }
 
 func (m Model) viewInput() string {
@@ -1130,6 +1420,96 @@ func (m Model) viewTypeForm() string {
 		msg = "\n" + errStyle.Render(m.message)
 	}
 	return baseStyle.Render(renderTimmiesLogo() + "\n" + titleStyle.Render("Timmies TUI") + "\n" + panel + msg)
+}
+
+func (m Model) viewConfirmDelete() string {
+	w := maxInt(40, m.width/2)
+
+	noLabel := formSelectedStyle.Render("▸ No")
+	yesLabel := formLabelStyle.Render("  Yes")
+	if m.confirmYes {
+		yesLabel = formSelectedStyle.Render("▸ Yes")
+		noLabel = formLabelStyle.Render("  No")
+	}
+
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Confirm delete") + "\n\n" +
+			m.confirmMsg + "\n\n" +
+			lipgloss.JoinHorizontal(lipgloss.Top, yesLabel, "   ", noLabel) + "\n\n" +
+			mutedStyle.Render("←/→ or y/n to toggle · Enter to confirm · Esc to cancel"),
+	)
+
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel)
+}
+
+func (m Model) viewEditClient() string {
+	w := maxInt(40, m.width-4)
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Edit client") + "\n\n" +
+			formLabelStyle.Render("Current: ") + formAnswerStyle.Render(m.editClientOldName) + "\n\n" +
+			formActiveStyle.Render("New name:") + "\n" +
+			m.input.View() + "\n\n" +
+			mutedStyle.Render("Enter to save · Esc to cancel"),
+	)
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel + msg)
+}
+
+func (m Model) viewEditType() string {
+	w := maxInt(40, m.width-4)
+
+	stepName := formLabelStyle.Render("  1. Name")
+	stepBillable := formLabelStyle.Render("  2. Billable")
+	stepRate := formLabelStyle.Render("  3. Hourly rate")
+
+	switch m.editTypeStep {
+	case 0:
+		stepName = formActiveStyle.Render("▸ 1. Name")
+	case 1:
+		stepName = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(m.editTypeName)
+		stepBillable = formActiveStyle.Render("▸ 2. Billable")
+	case 2:
+		stepName = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(m.editTypeName)
+		stepBillable = formLabelStyle.Render("  2. ") + formAnswerStyle.Render("Yes")
+		stepRate = formActiveStyle.Render("▸ 3. Hourly rate")
+	}
+
+	steps := lipgloss.JoinVertical(lipgloss.Left, stepName, stepBillable, stepRate)
+
+	var inputArea string
+	switch m.editTypeStep {
+	case 0:
+		inputArea = m.input.View()
+	case 1:
+		yes := "  Yes"
+		no := "  No"
+		if m.editTypeBill {
+			yes = formSelectedStyle.Render("▸ Yes")
+		} else {
+			no = formSelectedStyle.Render("▸ No")
+		}
+		inputArea = lipgloss.JoinVertical(lipgloss.Left, yes, no) + "\n" +
+			mutedStyle.Render("↑/↓ to toggle · Enter to confirm")
+	case 2:
+		inputArea = m.input.View()
+	}
+
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Edit tracking type") + "\n" +
+			formLabelStyle.Render("Editing: ") + formAnswerStyle.Render(m.editTypeOldName) + "\n\n" +
+			steps + "\n\n" +
+			inputArea + "\n" +
+			mutedStyle.Render("Esc to cancel"),
+	)
+
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel + msg)
 }
 
 func (m Model) viewReport() string {

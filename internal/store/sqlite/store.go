@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -793,4 +794,161 @@ LIMIT ?
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) RenameClient(oldName, newName string) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("new client name is required")
+	}
+	res, err := s.db.Exec(`UPDATE clients SET name = ? WHERE name = ?`, newName, oldName)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("client not found: %s", oldName)
+	}
+	return nil
+}
+
+func (s *Store) CountSessionsByClient(name string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+SELECT COUNT(*) FROM sessions s
+JOIN clients c ON c.id = s.client_id
+WHERE c.name = ?`, name).Scan(&count)
+	return count, err
+}
+
+func (s *Store) DeleteClient(name string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var clientID int64
+	if err := tx.QueryRow(`SELECT id FROM clients WHERE name = ?`, name).Scan(&clientID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("client not found: %s", name)
+		}
+		return err
+	}
+
+	var activeCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE client_id = ? AND status = 'active'`, clientID).Scan(&activeCount); err != nil {
+		return err
+	}
+	if activeCount > 0 {
+		return fmt.Errorf("cannot delete client with an active session — stop it first")
+	}
+
+	if _, err := tx.Exec(`DELETE FROM session_resources WHERE session_id IN (SELECT id FROM sessions WHERE client_id = ?)`, clientID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE client_id = ?`, clientID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM clients WHERE id = ?`, clientID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpdateTrackingType(oldName, newName string, isBillable bool, hourlyRate float64) error {
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("tracking type name is required")
+	}
+	if hourlyRate < 0 {
+		return fmt.Errorf("hourly rate must be >= 0")
+	}
+	if !isBillable {
+		hourlyRate = 0
+	}
+	billableInt := 0
+	if isBillable {
+		billableInt = 1
+	}
+	res, err := s.db.Exec(`UPDATE tracking_types SET name = ?, is_billable = ?, hourly_rate = ? WHERE name = ?`, newName, billableInt, hourlyRate, oldName)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("tracking type not found: %s", oldName)
+	}
+	return nil
+}
+
+func (s *Store) CountSessionsByTrackingType(name string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+SELECT COUNT(*) FROM sessions s
+JOIN tracking_types t ON t.id = s.tracking_type_id
+WHERE t.name = ?`, name).Scan(&count)
+	return count, err
+}
+
+func (s *Store) DeleteTrackingType(name string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var typeID int64
+	if err := tx.QueryRow(`SELECT id FROM tracking_types WHERE name = ?`, name).Scan(&typeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("tracking type not found: %s", name)
+		}
+		return err
+	}
+
+	var activeCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE tracking_type_id = ? AND status = 'active'`, typeID).Scan(&activeCount); err != nil {
+		return err
+	}
+	if activeCount > 0 {
+		return fmt.Errorf("cannot delete tracking type with an active session — stop it first")
+	}
+
+	if _, err := tx.Exec(`DELETE FROM session_resources WHERE session_id IN (SELECT id FROM sessions WHERE tracking_type_id = ?)`, typeID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE tracking_type_id = ?`, typeID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM tracking_types WHERE id = ?`, typeID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteSession(id int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var status string
+	if err := tx.QueryRow(`SELECT status FROM sessions WHERE id = ?`, id).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("session not found: %d", id)
+		}
+		return err
+	}
+	if status == "active" {
+		return fmt.Errorf("cannot delete an active session — stop it first")
+	}
+
+	if _, err := tx.Exec(`DELETE FROM session_resources WHERE session_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
