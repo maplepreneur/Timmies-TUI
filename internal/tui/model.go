@@ -22,9 +22,11 @@ import (
 type mode int
 
 const (
-	modeDashboard mode = iota
+	modeMenu mode = iota
+	modeDashboard
 	modeInput
 	modeReportView
+	modeTypeForm
 )
 
 type inputAction int
@@ -49,11 +51,16 @@ type tickMsg time.Time
 
 type keyMap struct {
 	quit         key.Binding
+	menuUp       key.Binding
+	menuDown     key.Binding
+	selectItem   key.Binding
 	addClient    key.Binding
 	addType      key.Binding
 	start        key.Binding
 	stop         key.Binding
 	resumeLatest key.Binding
+	menu         key.Binding
+	dashboard    key.Binding
 	report       key.Binding
 	addResource  key.Binding
 	resumePaused key.Binding
@@ -65,11 +72,16 @@ type keyMap struct {
 func newKeyMap() keyMap {
 	return keyMap{
 		quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		menuUp:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "menu up")),
+		menuDown:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "menu down")),
+		selectItem:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
 		addClient:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add client")),
-		addType:      key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "add type")),
+		addType:      key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "add type")),
 		start:        key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start session")),
 		stop:         key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop active")),
 		resumeLatest: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "resume latest")),
+		menu:         key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "management menu")),
+		dashboard:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dashboard")),
 		report:       key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "run report")),
 		addResource:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "add resource cost")),
 		resumePaused: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "resume selected paused")),
@@ -80,13 +92,14 @@ func newKeyMap() keyMap {
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.addClient, k.start, k.addResource, k.report, k.quit}
+	return []key.Binding{k.selectItem, k.addClient, k.start, k.dashboard, k.report, k.quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.addClient, k.addType, k.start, k.stop, k.resumeLatest, k.addResource, k.report},
-		{k.resumePaused, k.switchFocus, k.toggleHelp, k.back, k.quit},
+		{k.menuUp, k.menuDown, k.selectItem, k.addClient, k.addType, k.start, k.stop},
+		{k.resumeLatest, k.addResource, k.dashboard, k.menu, k.report, k.switchFocus, k.toggleHelp, k.back, k.quit},
+		{k.resumePaused},
 	}
 }
 
@@ -108,6 +121,8 @@ type Model struct {
 
 	active         *sqlite.SessionView
 	activeResTotal float64
+	clientNames    []string
+	typeDetails    []sqlite.TrackingTypeView
 	clientTotals   []sqlite.DurationAmountTotal
 	typeTotals     []sqlite.DurationAmountTotal
 	paused         []sqlite.PausedSessionView
@@ -130,14 +145,33 @@ type Model struct {
 	resourceSessionLabel string
 
 	showOverview bool
+	menuCursor   int
+
+	typeFormStep     int
+	typeFormName     string
+	typeFormBillable bool
 }
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
-	panelStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
-	infoStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	brandRed   = lipgloss.AdaptiveColor{Light: "#CC0000", Dark: "#FF3333"}
+	brandMuted = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#999999"}
+	brandFg    = lipgloss.AdaptiveColor{Light: "#1A1A1A", Dark: "#F0F0F0"}
+	brandBdr   = lipgloss.AdaptiveColor{Light: "#AAAAAA", Dark: "#555555"}
+	brandInfo  = lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#FFFFFF"}
+
+	baseStyle  = lipgloss.NewStyle().Foreground(brandFg)
+	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(brandRed)
+	panelStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(brandBdr).Padding(0, 1).Foreground(brandFg)
+	mutedStyle = lipgloss.NewStyle().Foreground(brandMuted)
+	infoStyle  = lipgloss.NewStyle().Foreground(brandInfo).Background(brandRed).Padding(0, 1)
+	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#FFFFFF"}).Background(lipgloss.AdaptiveColor{Light: "#AA0000", Dark: "#CC3333"}).Padding(0, 1)
+	leafStyle  = lipgloss.NewStyle().Foreground(brandRed)
+	logoText   = lipgloss.NewStyle().Foreground(brandFg).Bold(true)
+
+	formLabelStyle    = lipgloss.NewStyle().Foreground(brandMuted)
+	formActiveStyle   = lipgloss.NewStyle().Foreground(brandFg).Bold(true)
+	formSelectedStyle = lipgloss.NewStyle().Foreground(brandRed).Bold(true)
+	formAnswerStyle   = lipgloss.NewStyle().Foreground(brandRed)
 )
 
 func New(store *sqlite.Store, svc *service.TimerService) Model {
@@ -148,7 +182,7 @@ func New(store *sqlite.Store, svc *service.TimerService) Model {
 	m := Model{
 		store:          store,
 		service:        svc,
-		mode:           modeDashboard,
+		mode:           modeMenu,
 		action:         actionAddClient,
 		input:          ti,
 		help:           help.New(),
@@ -172,8 +206,8 @@ func newTable() table.Model {
 		table.WithHeight(7),
 	)
 	styles := table.DefaultStyles()
-	styles.Header = styles.Header.Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).Foreground(lipgloss.Color("99"))
-	styles.Selected = styles.Selected.Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Bold(true)
+	styles.Header = styles.Header.Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).Foreground(brandRed)
+	styles.Selected = styles.Selected.Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#000000"}).Background(brandRed).Bold(true)
 	t.SetStyles(styles)
 	return t
 }
@@ -201,13 +235,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch m.mode {
+		case modeMenu:
+			return m.updateMenuKey(msg)
 		case modeDashboard:
 			return m.updateDashboardKey(msg)
 		case modeInput:
 			return m.updateInputKey(msg)
 		case modeReportView:
 			return m.updateReportKey(msg)
+		case modeTypeForm:
+			return m.updateTypeFormKey(msg)
 		}
+	}
+	return m, nil
+}
+
+func (m Model) updateMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "up", "k":
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.menuCursor < 4 {
+			m.menuCursor++
+		}
+		return m, nil
+	case "enter":
+		return m.selectMenuItem()
+	case "a":
+		m.enterInput(actionAddClient, "client name")
+		return m, nil
+	case "t":
+		m.enterTypeForm()
+		return m, nil
+	case "s":
+		m.enterInput(actionStartSession, "@client type note...")
+		return m, nil
+	case "d":
+		m.mode = modeDashboard
+		return m, nil
+	case "p":
+		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
+		return m, nil
+	case "?":
+		m.showOverview = !m.showOverview
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
+	switch m.menuCursor {
+	case 0:
+		m.enterInput(actionAddClient, "client name")
+	case 1:
+		m.enterTypeForm()
+	case 2:
+		m.enterInput(actionStartSession, "@client type note...")
+	case 3:
+		m.mode = modeDashboard
+	case 4:
+		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
 	}
 	return m, nil
 }
@@ -216,11 +308,16 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "m", "esc":
+		m.mode = modeMenu
+		return m, nil
+	case "d":
+		return m, nil
 	case "a":
 		m.enterInput(actionAddClient, "client name")
 		return m, nil
-	case "k":
-		m.enterInput(actionAddType, "tracking type name")
+	case "t":
+		m.enterTypeForm()
 		return m, nil
 	case "s":
 		m.enterInput(actionStartSession, "@client type note...")
@@ -279,7 +376,7 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.mode = modeDashboard
+		m.mode = modeMenu
 		m.input.SetValue("")
 		m.resourceSessionID = 0
 		m.resourceSessionLabel = ""
@@ -315,6 +412,112 @@ func (m *Model) enterInput(action inputAction, placeholder string) {
 	m.message = ""
 }
 
+func (m *Model) enterTypeForm() {
+	m.mode = modeTypeForm
+	m.typeFormStep = 0
+	m.typeFormName = ""
+	m.typeFormBillable = false
+	m.input.SetValue("")
+	m.input.Placeholder = "type name"
+	m.input.Focus()
+	m.message = ""
+}
+
+func (m Model) updateTypeFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.typeFormStep {
+	case 0:
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			name := strings.TrimSpace(m.input.Value())
+			if name == "" {
+				m.message = "type name is required"
+				return m, nil
+			}
+			m.typeFormName = name
+			m.typeFormStep = 1
+			m.typeFormBillable = false
+			m.input.SetValue("")
+			m.message = ""
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	case 1:
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			m.input.SetValue("")
+			return m, nil
+		case "up", "down", "k", "j", "y", "n":
+			m.typeFormBillable = !m.typeFormBillable
+			return m, nil
+		case "enter":
+			if m.typeFormBillable {
+				m.typeFormStep = 2
+				m.input.SetValue("")
+				m.input.Placeholder = "hourly rate"
+				m.input.Focus()
+				m.message = ""
+			} else {
+				return m.submitTypeForm(0)
+			}
+			return m, nil
+		}
+		return m, nil
+	case 2:
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			rateStr := strings.TrimSpace(m.input.Value())
+			if rateStr == "" {
+				m.message = "hourly rate is required"
+				return m, nil
+			}
+			rate, err := strconv.ParseFloat(rateStr, 64)
+			if err != nil {
+				m.message = "invalid rate — enter a number"
+				return m, nil
+			}
+			if rate <= 0 {
+				m.message = "rate must be greater than 0"
+				return m, nil
+			}
+			return m.submitTypeForm(rate)
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+func (m Model) submitTypeForm(hourlyRate float64) (tea.Model, tea.Cmd) {
+	if err := m.store.AddTrackingTypeWithBilling(m.typeFormName, m.typeFormBillable, hourlyRate); err != nil {
+		m.message = err.Error()
+	} else {
+		if m.typeFormBillable {
+			m.message = fmt.Sprintf("type created: %s (billable @ $%.0f/h)", m.typeFormName, hourlyRate)
+		} else {
+			m.message = fmt.Sprintf("type created: %s (non-billable)", m.typeFormName)
+		}
+	}
+	m.mode = modeMenu
+	m.input.SetValue("")
+	m.refreshDashboard()
+	m.syncTables()
+	return m, nil
+}
+
 func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	value := strings.TrimSpace(m.input.Value())
 	switch m.action {
@@ -333,10 +536,19 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			m.message = "tracking type name is required"
 			return m, nil
 		}
-		if err := m.store.AddTrackingType(value); err != nil {
+		typeName, isBillable, hourlyRate, err := parseTrackingTypeInput(value)
+		if err != nil {
+			m.message = err.Error()
+			return m, nil
+		}
+		if err := m.store.AddTrackingTypeWithBilling(typeName, isBillable, hourlyRate); err != nil {
 			m.message = err.Error()
 		} else {
-			m.message = "tracking type created"
+			if isBillable {
+				m.message = fmt.Sprintf("tracking type created (%s @ $%.2f/h)", typeName, hourlyRate)
+			} else {
+				m.message = "tracking type created"
+			}
 		}
 	case actionStartSession:
 		parts := strings.Fields(value)
@@ -419,7 +631,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.mode = modeDashboard
+	m.mode = modeMenu
 	m.input.SetValue("")
 	m.resourceSessionID = 0
 	m.resourceSessionLabel = ""
@@ -489,13 +701,26 @@ func (m *Model) refreshDashboard() {
 		}
 	}
 
-	from, to := currentMonthRange(time.Now().UTC())
-	clients, err := m.store.DashboardTotalsByClient(from, to)
+	clients, err := m.store.ListClients()
 	if err != nil {
 		m.message = err.Error()
 		return
 	}
-	types, err := m.store.DashboardTotalsByTrackingType(from, to)
+	typeDetails, err := m.store.ListTrackingTypeDetails()
+	if err != nil {
+		m.message = err.Error()
+		return
+	}
+	m.clientNames = clients
+	m.typeDetails = typeDetails
+
+	from, to := currentMonthRange(time.Now().UTC())
+	clientTotals, err := m.store.DashboardTotalsByClient(from, to)
+	if err != nil {
+		m.message = err.Error()
+		return
+	}
+	typeTotals, err := m.store.DashboardTotalsByTrackingType(from, to)
 	if err != nil {
 		m.message = err.Error()
 		return
@@ -505,8 +730,8 @@ func (m *Model) refreshDashboard() {
 		m.message = err.Error()
 		return
 	}
-	m.clientTotals = clients
-	m.typeTotals = types
+	m.clientTotals = clientTotals
+	m.typeTotals = typeTotals
 	m.paused = paused
 }
 
@@ -640,13 +865,106 @@ func renderMarkdown(markdown string, width int) string {
 }
 
 func (m Model) View() string {
+	if m.mode == modeMenu {
+		return m.viewMenu()
+	}
 	if m.mode == modeInput {
 		return m.viewInput()
 	}
 	if m.mode == modeReportView {
 		return m.viewReport()
 	}
+	if m.mode == modeTypeForm {
+		return m.viewTypeForm()
+	}
 	return m.viewDashboard()
+}
+
+func (m Model) viewMenu() string {
+	header := titleStyle.Render("Timmies TUI") + "  " + mutedStyle.Render("management menu")
+	activeLine := mutedStyle.Render("Active session: none")
+	if m.active != nil {
+		elapsed := int64(time.Since(m.active.StartedAt).Seconds())
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		activeLine = fmt.Sprintf("Active session: @%s · %s · %s", m.active.ClientName, m.active.TrackingTypeName, report.HumanDuration(elapsed))
+	}
+
+	menuItems := []string{
+		"Add client",
+		"Add tracking type",
+		"Start session",
+		"Open dashboard",
+		"Run report",
+	}
+	var menuLines []string
+	for i, item := range menuItems {
+		prefix := "  "
+		if i == m.menuCursor {
+			prefix = "> "
+			item = titleStyle.Render(item)
+		}
+		menuLines = append(menuLines, prefix+item)
+	}
+	menuPanel := panelStyle.Width(maxInt(40, m.width-4)).Render(
+		titleStyle.Render("Management actions") + "\n" +
+			strings.Join(menuLines, "\n") + "\n\n" +
+			mutedStyle.Render("Use ↑/↓ (or j/k), Enter to select."),
+	)
+
+	var clientsBuilder strings.Builder
+	for _, c := range m.clientNames {
+		fmt.Fprintf(&clientsBuilder, "- @%s\n", c)
+	}
+	if len(m.clientNames) == 0 {
+		clientsBuilder.WriteString("- (none)\n")
+	}
+
+	var typesBuilder strings.Builder
+	for _, t := range m.typeDetails {
+		if t.IsBillable {
+			fmt.Fprintf(&typesBuilder, "- %s (billable @ $%.2f/h)\n", t.Name, t.HourlyRate)
+		} else {
+			fmt.Fprintf(&typesBuilder, "- %s (non-billable)\n", t.Name)
+		}
+	}
+	if len(m.typeDetails) == 0 {
+		typesBuilder.WriteString("- (none)\n")
+	}
+
+	dbPanel := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		panelStyle.Width(maxInt(20, (maxInt(40, m.width-5))/2)).Render(titleStyle.Render("Clients")+"\n"+clientsBuilder.String()),
+		" ",
+		panelStyle.Width(maxInt(20, (maxInt(40, m.width-5))/2)).Render(titleStyle.Render("Tracking types")+"\n"+typesBuilder.String()),
+	)
+	if m.width > 0 && m.width < 110 {
+		dbPanel = lipgloss.JoinVertical(
+			lipgloss.Left,
+			panelStyle.Width(maxInt(40, m.width-4)).Render(titleStyle.Render("Clients")+"\n"+clientsBuilder.String()),
+			panelStyle.Width(maxInt(40, m.width-4)).Render(titleStyle.Render("Tracking types")+"\n"+typesBuilder.String()),
+		)
+	}
+
+	footer := m.help.View(m.keys)
+	if m.message != "" {
+		if strings.Contains(strings.ToLower(m.message), "error") || strings.Contains(strings.ToLower(m.message), "invalid") {
+			footer = errStyle.Render(m.message) + "\n" + footer
+		} else {
+			footer = infoStyle.Render(m.message) + "\n" + footer
+		}
+	}
+	if m.showOverview {
+		overview := renderMarkdown(
+			"### Management menu\n\n- Create clients and tracking types from this page.\n- Tracking types support billing: `type_name billable 150`.\n- Start sessions with `@client type note...`.\n- Press **d** for dashboard, **p** for reports, **m** to return here.",
+			maxInt(40, m.width-6),
+		)
+		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
+	}
+
+	out := lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, mutedStyle.Render(activeLine), menuPanel, dbPanel, footer)
+	return baseStyle.Render(out)
 }
 
 func (m Model) viewDashboard() string {
@@ -708,7 +1026,7 @@ func (m Model) viewDashboard() string {
 		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, activePanel, body, footer)
+	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, activePanel, body, footer))
 }
 
 func (m Model) viewInput() string {
@@ -739,13 +1057,71 @@ func (m Model) viewInput() string {
 	if m.message != "" {
 		msg = "\n" + infoStyle.Render(m.message)
 	}
-	return titleStyle.Render("Timmies TUI") + "\n" + panel + msg
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + titleStyle.Render("Timmies TUI") + "\n" + panel + msg)
+}
+
+func (m Model) viewTypeForm() string {
+	w := maxInt(40, m.width-4)
+
+	stepName := formLabelStyle.Render("  1. Name")
+	stepBillable := formLabelStyle.Render("  2. Billable")
+	stepRate := formLabelStyle.Render("  3. Hourly rate")
+
+	switch m.typeFormStep {
+	case 0:
+		stepName = formActiveStyle.Render("▸ 1. Name")
+		stepBillable = formLabelStyle.Render("  2. Billable")
+		stepRate = formLabelStyle.Render("  3. Hourly rate")
+	case 1:
+		stepName = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(m.typeFormName)
+		stepBillable = formActiveStyle.Render("▸ 2. Billable")
+		stepRate = formLabelStyle.Render("  3. Hourly rate")
+	case 2:
+		stepName = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(m.typeFormName)
+		stepBillable = formLabelStyle.Render("  2. ") + formAnswerStyle.Render("Yes")
+		stepRate = formActiveStyle.Render("▸ 3. Hourly rate")
+	}
+
+	steps := lipgloss.JoinVertical(lipgloss.Left, stepName, stepBillable, stepRate)
+
+	var inputArea string
+	switch m.typeFormStep {
+	case 0:
+		inputArea = m.input.View()
+	case 1:
+		yes := "  Yes"
+		no := "  No"
+		if m.typeFormBillable {
+			yes = formSelectedStyle.Render("▸ Yes")
+			no = "  No"
+		} else {
+			yes = "  Yes"
+			no = formSelectedStyle.Render("▸ No")
+		}
+		inputArea = lipgloss.JoinVertical(lipgloss.Left, yes, no) + "\n" +
+			mutedStyle.Render("↑/↓ to toggle · Enter to confirm")
+	case 2:
+		inputArea = m.input.View()
+	}
+
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Add tracking type") + "\n\n" +
+			steps + "\n\n" +
+			inputArea + "\n" +
+			mutedStyle.Render("Esc to cancel"),
+	)
+
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + titleStyle.Render("Timmies TUI") + "\n" + panel + msg)
 }
 
 func (m Model) viewReport() string {
 	header := titleStyle.Render("Timmies TUI report") + "\n" + mutedStyle.Render("Esc to dashboard · ↑/↓/PgUp/PgDn to scroll")
 	panel := panelStyle.Width(maxInt(40, m.width-4)).Render(m.reportViewport.View())
-	return lipgloss.JoinVertical(lipgloss.Left, header, panel)
+	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, panel))
 }
 
 func Run(store *sqlite.Store, svc *service.TimerService) error {
@@ -759,6 +1135,47 @@ func parseReportPeriod(parts []string) (report.PeriodOptions, error) {
 		return report.PeriodOptions{FromDate: parts[0], ToDate: parts[1]}, nil
 	}
 	return report.ParseRelativePeriod(parts)
+}
+
+func parseTrackingTypeInput(value string) (name string, isBillable bool, hourlyRate float64, err error) {
+	parts := strings.Fields(value)
+	if len(parts) == 0 {
+		return "", false, 0, fmt.Errorf("tracking type name is required")
+	}
+	name = parts[0]
+	if len(parts) == 1 {
+		return name, false, 0, nil
+	}
+	if len(parts) != 3 || strings.ToLower(parts[1]) != "billable" {
+		return "", false, 0, fmt.Errorf("use: type_name | type_name billable hourly_rate")
+	}
+	rate, parseErr := strconv.ParseFloat(parts[2], 64)
+	if parseErr != nil {
+		return "", false, 0, fmt.Errorf("invalid hourly rate; use: type_name billable hourly_rate")
+	}
+	if rate <= 0 {
+		return "", false, 0, fmt.Errorf("hourly rate must be greater than 0")
+	}
+	return name, true, rate, nil
+}
+
+func renderTimmiesLogo() string {
+	leaf := leafStyle.Render
+	txt := logoText.Render
+	lines := []string{
+		leaf("               /\\"),
+		leaf("          /\\  /  \\  /\\"),
+		leaf("         /  \\/    \\/  \\"),
+		leaf("    /\\  /              \\  /\\"),
+		leaf("   /  \\/    ") + txt("TIMMIES") + leaf("     \\/  \\"),
+		leaf("   \\                        /"),
+		leaf("    \\_    /\\        /\\    _/"),
+		leaf("      \\  /  \\  /\\  /  \\  /"),
+		leaf("       \\/    \\/  \\/    \\/"),
+		leaf("               ||"),
+		leaf("               ||"),
+	}
+	return strings.Join(lines, "\n")
 }
 
 func maxInt(a, b int) int {

@@ -30,6 +30,7 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:     "timmies",
 		Short:   "Timmies TUI is a CLI/TUI time tracker",
+		Long:    cliLogo() + "\nTimmies TUI is a CLI/TUI time tracker",
 		Version: "1.0",
 	}
 	root.PersistentFlags().StringVar(&dbPath, "db", "tim.db", "sqlite database path")
@@ -530,4 +531,21 @@ func validateLogoPath(path string) error {
 	}
 	_ = f.Close()
 	return nil
+}
+
+func cliLogo() string {
+	red := "\x1b[31m"
+	white := "\x1b[97m"
+	reset := "\x1b[0m"
+	return strings.Join([]string{
+		red + "                 /\\" + reset,
+		red + "           /\\   /" + white + "T" + red + "\\   /\\" + reset,
+		red + "          /++\\ /+" + white + "i" + red + "++\\ /++\\" + reset,
+		red + "         /++++\\+" + white + "m" + red + "++++/++++\\" + reset,
+		red + "          \\++++++" + white + "m" + red + "++++++/" + reset,
+		red + "           \\+++++" + white + "i" + red + "+++++/" + reset,
+		red + "            \\++++" + white + "e" + red + "++++/" + reset,
+		red + "             \\+++" + white + "s" + red + "+++/" + reset,
+		red + "               \\/" + reset,
+	}, "\n")
 }
