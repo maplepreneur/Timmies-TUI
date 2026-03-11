@@ -14,15 +14,25 @@ git clone https://github.com/maplepreneur/Timmies-TUI/
 cd Timmies-TUI
 ```
 
-## 2) Build the binary
+## 2) Build and install
+
+The quickest way is to run the install script:
+
+```bash
+./install.sh
+```
+
+This builds a local `timmies` binary and installs it to your Go bin path.
+
+### Manual steps
+
+Build only (local binary):
 
 ```bash
 go build -o timmies ./cmd/timmies
 ```
 
-This creates a local executable named `timmies`.
-
-## 3) (Optional) Install globally
+Install globally:
 
 ```bash
 go install ./cmd/timmies
@@ -30,7 +40,7 @@ go install ./cmd/timmies
 
 After this, make sure your Go bin path is in `PATH` (usually `~/go/bin`).
 
-## 4) Verify install
+## 3) Verify install
 
 ```bash
 ./timmies --help

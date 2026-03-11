@@ -9,6 +9,15 @@ Created with ❤️ by **Voxel North Technologies Inc.**
 - Install guide: [`docs/install/README.md`](docs/install/README.md)
 - Usage tutorial: [`docs/tutorial/README.md`](docs/tutorial/README.md)
 
+## Quick install
+
+```bash
+git clone https://github.com/maplepreneur/Timmies-TUI/ && cd Timmies-TUI
+./install.sh
+```
+
+See the full [install guide](docs/install/README.md) for details.
+
 ## Features
 
 - Manage tracking clients and tracking types.
