@@ -10,8 +10,8 @@ This is the quickest way to get `timmies` running locally.
 ## 1) Clone the repo
 
 ```bash
-git clone git@github.com:maplepreneur/chrono.git
-cd chrono
+git clone https://github.com/maplepreneur/Timmies-TUI/
+cd Timmies-TUI
 ```
 
 ## 2) Build the binary
