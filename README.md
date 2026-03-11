@@ -17,3 +17,15 @@
 - Export report rows to CSV.
 - Configure report branding (display name + logo file path) for PDF exports.
 - Self-update from the repository main branch with `timmies update`.
+
+## Testing
+
+Run tests from the repository root:
+
+- Run all tests:
+	- `go test ./...`
+- Run tests for a single package:
+	- `go test ./internal/report`
+- Run a single test by name:
+	- `go test ./internal/report -run TestResolveDateRangeThisYear -v`
+	- `go test ./internal/store/sqlite -run TestReportByClientIncludesBillingAndTotals -v`
