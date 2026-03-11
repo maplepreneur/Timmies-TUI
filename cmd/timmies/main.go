@@ -535,17 +535,23 @@ func validateLogoPath(path string) error {
 
 func cliLogo() string {
 	red := "\x1b[31m"
-	white := "\x1b[97m"
+	white := "\x1b[1;97m"
+	dim := "\x1b[2m"
 	reset := "\x1b[0m"
 	return strings.Join([]string{
-		red + "                 /\\" + reset,
-		red + "           /\\   /" + white + "T" + red + "\\   /\\" + reset,
-		red + "          /++\\ /+" + white + "i" + red + "++\\ /++\\" + reset,
-		red + "         /++++\\+" + white + "m" + red + "++++/++++\\" + reset,
-		red + "          \\++++++" + white + "m" + red + "++++++/" + reset,
-		red + "           \\+++++" + white + "i" + red + "+++++/" + reset,
-		red + "            \\++++" + white + "e" + red + "++++/" + reset,
-		red + "             \\+++" + white + "s" + red + "+++/" + reset,
-		red + "               \\/" + reset,
+		red + "               /\\" + reset,
+		red + "          /\\  /  \\  /\\" + reset,
+		red + "         /  \\/    \\/  \\" + reset,
+		red + "    /\\  /              \\  /\\" + reset,
+		red + "   /  \\/    " + white + "TIMMIES" + reset + red + "     \\/  \\" + reset,
+		red + "   \\                        /" + reset,
+		red + "    \\_    /\\        /\\    _/" + reset,
+		red + "      \\  /  \\  /\\  /  \\  /" + reset,
+		red + "       \\/    \\/  \\/    \\/" + reset,
+		red + "               ||" + reset,
+		red + "               ||" + reset,
+		"",
+		dim + "  Created with ❤️  by Voxel North Technologies Inc." + reset,
+		dim + "  Licensed under the O'Saasy License" + reset,
 	}, "\n")
 }

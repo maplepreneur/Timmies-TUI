@@ -2,6 +2,8 @@
 
 `timmies` is a Go CLI/TUI time tracker using Charm libraries.
 
+Created with ❤️ by **Voxel North Technologies Inc.**
+
 ## Start here
 
 - Install guide: [`docs/install/README.md`](docs/install/README.md)
@@ -29,3 +31,9 @@ Run tests from the repository root:
 - Run a single test by name:
 	- `go test ./internal/report -run TestResolveDateRangeThisYear -v`
 	- `go test ./internal/store/sqlite -run TestReportByClientIncludesBillingAndTotals -v`
+
+## License
+
+This project is licensed under the [O'Saasy License](LICENSE.md).
+
+© 2026 Voxel North Technologies Inc.

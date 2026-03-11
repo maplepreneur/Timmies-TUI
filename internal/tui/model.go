@@ -957,7 +957,7 @@ func (m Model) viewMenu() string {
 	}
 	if m.showOverview {
 		overview := renderMarkdown(
-			"### Management menu\n\n- Create clients and tracking types from this page.\n- Tracking types support billing: `type_name billable 150`.\n- Start sessions with `@client type note...`.\n- Press **d** for dashboard, **p** for reports, **m** to return here.",
+			"### Management menu\n\n- Create clients and tracking types from this page.\n- Tracking types now use a guided form: press **t** to add a type.\n- Start sessions with `@client type note...`.\n- Press **d** for dashboard, **p** for reports, **m** to return here.\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
 			maxInt(40, m.width-6),
 		)
 		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
@@ -1020,7 +1020,7 @@ func (m Model) viewDashboard() string {
 
 	if m.showOverview {
 		overview := renderMarkdown(
-			"### Overview\n\n- Use **Tab** to move focus between dashboard sections.\n- Press **c** to add a resource cost to the active session or selected paused row.\n- In **Paused/stopped sessions**, press **Enter** to resume the selected row.\n- Use **p** for reports with explicit dates (`@client 2026-01-01 2026-01-31`) or relative periods (`@client last 2 weeks`, `@client this year`).",
+			"### Overview\n\n- Use **Tab** to move focus between dashboard sections.\n- Press **c** to add a resource cost to the active session or selected paused row.\n- In **Paused/stopped sessions**, press **Enter** to resume the selected row.\n- Use **p** for reports with explicit dates (`@client 2026-01-01 2026-01-31`) or relative periods (`@client last 2 weeks`, `@client this year`).\n\n---\n_Created with ❤️ by Voxel North Technologies Inc. · O'Saasy License_",
 			maxInt(40, m.width-6),
 		)
 		footer = panelStyle.Width(maxInt(40, m.width-4)).Render(overview) + "\n" + footer
