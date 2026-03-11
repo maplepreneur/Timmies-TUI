@@ -27,6 +27,9 @@ const (
 	modeInput
 	modeReportView
 	modeTypeForm
+	modeConfirmDelete
+	modeEditClient
+	modeEditType
 )
 
 type inputAction int
@@ -150,6 +153,17 @@ type Model struct {
 	typeFormStep     int
 	typeFormName     string
 	typeFormBillable bool
+
+	confirmMsg    string
+	confirmYes    bool
+	confirmAction func()
+
+	editClientOldName string
+
+	editTypeOldName string
+	editTypeStep    int
+	editTypeName    string
+	editTypeBill    bool
 }
 
 var (
@@ -1160,25 +1174,7 @@ func parseTrackingTypeInput(value string) (name string, isBillable bool, hourlyR
 }
 
 func renderTimmiesLogo() string {
-	leaf := leafStyle.Render
-	txt := logoText.Render
-	lines := []string{
-		leaf("              /\\"),
-		leaf("            _/  \\_"),
-		leaf("           /      \\"),
-		leaf("   _      /        \\      _"),
-		leaf("  / \\    /          \\    / \\"),
-		leaf(" /   \\__/            \\__/   \\"),
-		leaf(" \\          ") + txt("TIMMIES") + leaf("         /"),
-		leaf("  \\                        /"),
-		leaf("   \\                      /"),
-		leaf("    \\                    /"),
-		leaf("     \\__              __/"),
-		leaf("        \\____    ____/"),
-		leaf("             |  |"),
-		leaf("             |  |"),
-	}
-	return strings.Join(lines, "\n")
+	return leafStyle.Render("🍁") + " " + logoText.Render("TIMMIES")
 }
 
 func maxInt(a, b int) int {

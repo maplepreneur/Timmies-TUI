@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,7 +108,48 @@ func newRootCmd() *cobra.Command {
 			return nil
 		}),
 	}
-	clientCmd.AddCommand(clientAddCmd, clientListCmd)
+	clientEditCmd := &cobra.Command{
+		Use:   "edit [old-name] [new-name]",
+		Args:  cobra.ExactArgs(2),
+		Short: "Rename a client",
+		RunE: withDeps(func(store *sqlstore.Store, _ *service.TimerService, cmd *cobra.Command, args []string) error {
+			if err := store.RenameClient(args[0], args[1]); err != nil {
+				return err
+			}
+			fmt.Printf("renamed client: %s → %s\n", args[0], args[1])
+			return nil
+		}),
+	}
+	var clientDeleteYes bool
+	clientDeleteCmd := &cobra.Command{
+		Use:   "delete [name]",
+		Args:  cobra.ExactArgs(1),
+		Short: "Delete a client and all associated sessions",
+		RunE: withDeps(func(store *sqlstore.Store, _ *service.TimerService, cmd *cobra.Command, args []string) error {
+			name := args[0]
+			count, err := store.CountSessionsByClient(name)
+			if err != nil {
+				return err
+			}
+			if !clientDeleteYes {
+				fmt.Printf("Delete client '%s' and %d session(s)? [y/N] ", name, count)
+				scanner := bufio.NewScanner(os.Stdin)
+				scanner.Scan()
+				ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
+				if ans != "y" && ans != "yes" {
+					fmt.Println("cancelled")
+					return nil
+				}
+			}
+			if err := store.DeleteClient(name); err != nil {
+				return err
+			}
+			fmt.Printf("deleted client: %s (%d session(s) removed)\n", name, count)
+			return nil
+		}),
+	}
+	clientDeleteCmd.Flags().BoolVar(&clientDeleteYes, "yes", false, "skip confirmation prompt")
+	clientCmd.AddCommand(clientAddCmd, clientListCmd, clientEditCmd, clientDeleteCmd)
 	root.AddCommand(clientCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Manage app configuration"}
@@ -225,7 +268,73 @@ func newRootCmd() *cobra.Command {
 			return nil
 		}),
 	}
-	typeCmd.AddCommand(typeAddCmd, typeListCmd)
+	var typeEditName string
+	var typeEditBillable bool
+	var typeEditRate float64
+	typeEditCmd := &cobra.Command{
+		Use:   "edit [current-name]",
+		Args:  cobra.ExactArgs(1),
+		Short: "Edit a tracking type",
+		Long:  "Edit a tracking type's name and/or billing configuration.",
+		Example: strings.Join([]string{
+			"  timmies type edit dev --name development",
+			"  timmies type edit dev --billable --rate 120",
+			"  timmies type edit dev --name development --billable --rate 120",
+		}, "\n"),
+		RunE: withDeps(func(store *sqlstore.Store, _ *service.TimerService, cmd *cobra.Command, args []string) error {
+			oldName := args[0]
+			newName := oldName
+			if cmd.Flags().Changed("name") {
+				newName = typeEditName
+			}
+			isBillable := typeEditBillable
+			rate := typeEditRate
+			if isBillable && !cmd.Flags().Changed("rate") {
+				return errors.New("--rate is required when --billable is set")
+			}
+			if isBillable && rate <= 0 {
+				return errors.New("--rate must be greater than 0 when --billable is set")
+			}
+			if err := store.UpdateTrackingType(oldName, newName, isBillable, rate); err != nil {
+				return err
+			}
+			fmt.Printf("updated type: %s\n", newName)
+			return nil
+		}),
+	}
+	typeEditCmd.Flags().StringVar(&typeEditName, "name", "", "new name for the tracking type")
+	typeEditCmd.Flags().BoolVar(&typeEditBillable, "billable", false, "mark tracking type as billable")
+	typeEditCmd.Flags().Float64Var(&typeEditRate, "rate", 0, "hourly rate in dollars")
+	var typeDeleteYes bool
+	typeDeleteCmd := &cobra.Command{
+		Use:   "delete [name]",
+		Args:  cobra.ExactArgs(1),
+		Short: "Delete a tracking type and all associated sessions",
+		RunE: withDeps(func(store *sqlstore.Store, _ *service.TimerService, cmd *cobra.Command, args []string) error {
+			name := args[0]
+			count, err := store.CountSessionsByTrackingType(name)
+			if err != nil {
+				return err
+			}
+			if !typeDeleteYes {
+				fmt.Printf("Delete tracking type '%s' and %d session(s)? [y/N] ", name, count)
+				scanner := bufio.NewScanner(os.Stdin)
+				scanner.Scan()
+				ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
+				if ans != "y" && ans != "yes" {
+					fmt.Println("cancelled")
+					return nil
+				}
+			}
+			if err := store.DeleteTrackingType(name); err != nil {
+				return err
+			}
+			fmt.Printf("deleted type: %s (%d session(s) removed)\n", name, count)
+			return nil
+		}),
+	}
+	typeDeleteCmd.Flags().BoolVar(&typeDeleteYes, "yes", false, "skip confirmation prompt")
+	typeCmd.AddCommand(typeAddCmd, typeListCmd, typeEditCmd, typeDeleteCmd)
 	root.AddCommand(typeCmd)
 
 	var clientName, trackingTypeName, note string
@@ -312,7 +421,35 @@ func newRootCmd() *cobra.Command {
 	_ = sessionResourceAddCmd.MarkFlagRequired("name")
 	_ = sessionResourceAddCmd.MarkFlagRequired("cost")
 	sessionResourceCmd.AddCommand(sessionResourceAddCmd)
-	sessionCmd.AddCommand(sessionResourceCmd)
+	var sessionDeleteYes bool
+	sessionDeleteCmd := &cobra.Command{
+		Use:   "delete [id]",
+		Args:  cobra.ExactArgs(1),
+		Short: "Delete a stopped session",
+		RunE: withDeps(func(store *sqlstore.Store, _ *service.TimerService, cmd *cobra.Command, args []string) error {
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid session id: %s", args[0])
+			}
+			if !sessionDeleteYes {
+				fmt.Printf("Delete session %d and its resources? [y/N] ", id)
+				scanner := bufio.NewScanner(os.Stdin)
+				scanner.Scan()
+				ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
+				if ans != "y" && ans != "yes" {
+					fmt.Println("cancelled")
+					return nil
+				}
+			}
+			if err := store.DeleteSession(id); err != nil {
+				return err
+			}
+			fmt.Printf("deleted session %d\n", id)
+			return nil
+		}),
+	}
+	sessionDeleteCmd.Flags().BoolVar(&sessionDeleteYes, "yes", false, "skip confirmation prompt")
+	sessionCmd.AddCommand(sessionResourceCmd, sessionDeleteCmd)
 	root.AddCommand(sessionCmd)
 
 	statusCmd := &cobra.Command{
@@ -534,25 +671,11 @@ func validateLogoPath(path string) error {
 }
 
 func cliLogo() string {
-	red := "\x1b[31m"
 	white := "\x1b[1;97m"
 	dim := "\x1b[2m"
 	reset := "\x1b[0m"
 	return strings.Join([]string{
-		red + "              /\\" + reset,
-		red + "            _/  \\_" + reset,
-		red + "           /      \\" + reset,
-		red + "   _      /        \\      _" + reset,
-		red + "  / \\    /          \\    / \\" + reset,
-		red + " /   \\__/            \\__/   \\" + reset,
-		red + " \\          " + white + "TIMMIES" + reset + red + "         /" + reset,
-		red + "  \\                        /" + reset,
-		red + "   \\                      /" + reset,
-		red + "    \\                    /" + reset,
-		red + "     \\__              __/" + reset,
-		red + "        \\____    ____/" + reset,
-		red + "             |  |" + reset,
-		red + "             |  |" + reset,
+		"🍁 " + white + "TIMMIES" + reset,
 		"",
 		dim + "  Created with ❤️  by Voxel North Technologies Inc." + reset,
 		dim + "  Licensed under the O'Saasy License" + reset,
