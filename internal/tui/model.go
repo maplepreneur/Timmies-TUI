@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/maplepreneur/chrono/internal/export"
 	"github.com/maplepreneur/chrono/internal/report"
 	"github.com/maplepreneur/chrono/internal/service"
 	"github.com/maplepreneur/chrono/internal/store/sqlite"
@@ -31,6 +33,10 @@ const (
 	modeEditClient
 	modeEditType
 	modeSessionForm
+	modeReportForm
+	modeDetailView
+	modeExportPath
+	modeDashboardTimeform
 )
 
 type inputAction int
@@ -71,6 +77,10 @@ type keyMap struct {
 	switchFocus  key.Binding
 	toggleHelp   key.Binding
 	back         key.Binding
+	deleteItem   key.Binding
+	exportPDF    key.Binding
+	timeframe    key.Binding
+	edit         key.Binding
 }
 
 func newKeyMap() keyMap {
@@ -88,22 +98,26 @@ func newKeyMap() keyMap {
 		dashboard:    key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dashboard")),
 		report:       key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "run report")),
 		addResource:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "add resource cost")),
-		resumePaused: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "resume selected paused")),
+		resumePaused: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "resume selected")),
 		switchFocus:  key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "switch focus")),
 		toggleHelp:   key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "overview/help")),
 		back:         key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		deleteItem:   key.NewBinding(key.WithKeys("D"), key.WithHelp("D", "delete")),
+		exportPDF:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "export pdf")),
+		timeframe:    key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "timeframe")),
+		edit:         key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 	}
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.selectItem, k.addClient, k.start, k.dashboard, k.report, k.quit}
+	return []key.Binding{k.selectItem, k.addClient, k.start, k.stop, k.resumeLatest, k.dashboard, k.report, k.quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.menuUp, k.menuDown, k.selectItem, k.addClient, k.addType, k.start, k.stop},
-		{k.resumeLatest, k.addResource, k.dashboard, k.menu, k.report, k.switchFocus, k.toggleHelp, k.back, k.quit},
-		{k.resumePaused},
+		{k.resumeLatest, k.addResource, k.dashboard, k.menu, k.report, k.switchFocus, k.back, k.quit},
+		{k.deleteItem, k.edit, k.exportPDF, k.timeframe, k.toggleHelp, k.resumePaused},
 	}
 }
 
@@ -169,6 +183,23 @@ type Model struct {
 	sessionFormStep   int
 	sessionFormType   int // index into typeDetails
 	sessionFormClient int // index into clientNames (0 = none, 1+ = clientNames[i-1])
+
+	reportFormStep   int
+	reportFormClient int // 0 = all, 1+ = clientNames[i-1]
+	reportFormPeriod int
+	reportClient     string
+
+	dashTimeframe    int // 0=This Month, 1=Last 7 Days, 2=Last 30 Days, 3=This Year, 4=Custom
+	dashTimeformStep int
+	dashCustomFrom   string
+	dashCustomTo     string
+
+	detailName     string
+	detailByClient bool
+	detailSessions []sqlite.DetailSessionView
+	detailTable    table.Model
+
+	exportPath string
 }
 
 var (
@@ -209,9 +240,10 @@ func New(store *sqlite.Store, svc *service.TimerService) Model {
 		clientsTable:   newTable(),
 		typesTable:     newTable(),
 		pausedTable:    newTable(),
+		detailTable:    newTable(),
 		reportViewport: viewport.New(20, 10),
 	}
-	m.help.ShowAll = false
+	m.help.ShowAll = true
 	m.refreshDashboard()
 	m.syncTables()
 	return m
@@ -272,6 +304,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditTypeKey(msg)
 		case modeSessionForm:
 			return m.updateSessionFormKey(msg)
+		case modeReportForm:
+			return m.updateReportFormKey(msg)
+		case modeDetailView:
+			return m.updateDetailViewKey(msg)
+		case modeExportPath:
+			return m.updateExportPathKey(msg)
+		case modeDashboardTimeform:
+			return m.updateDashboardTimeformKey(msg)
 		}
 	}
 	return m, nil
@@ -312,7 +352,7 @@ func (m Model) updateMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeDashboard
 		return m, nil
 	case "p":
-		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
+		m.enterReportForm()
 		return m, nil
 	case "?":
 		m.showOverview = !m.showOverview
@@ -336,7 +376,7 @@ func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
 	case 5:
 		m.mode = modeDashboard
 	case 6:
-		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
+		m.enterReportForm()
 	}
 	return m, nil
 }
@@ -386,7 +426,7 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resumeLatestSession()
 		return m, nil
 	case "p":
-		m.enterInput(actionReport, "@client YYYY-MM-DD YYYY-MM-DD | @client last N days | @client last N weeks | @client this year")
+		m.enterReportForm()
 		return m, nil
 	case "c":
 		return m.enterResourceInput()
@@ -400,9 +440,24 @@ func (m Model) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startEditFromDashboard()
 	case "D":
 		return m.startDeleteFromDashboard()
+	case "f":
+		m.dashTimeframe = (m.dashTimeframe + 1) % 5
+		if m.dashTimeframe == 4 {
+			m.enterDashboardTimeform()
+			return m, nil
+		}
+		m.refreshDashboard()
+		m.syncTables()
+		return m, nil
+	case "F":
+		m.enterDashboardTimeform()
+		return m, nil
 	case "enter":
 		if m.focus == focusPaused {
 			return m.resumeSelectedPaused()
+		}
+		if m.focus == focusClients || m.focus == focusTypes {
+			return m.openDetailView()
 		}
 	}
 
@@ -445,6 +500,13 @@ func (m Model) updateReportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.mode = modeDashboard
+		return m, nil
+	case "e":
+		m.mode = modeExportPath
+		m.input.SetValue("")
+		m.input.Placeholder = "output file path (e.g. ~/report.pdf)"
+		m.input.Focus()
+		m.message = ""
 		return m, nil
 	}
 	var cmd tea.Cmd
@@ -642,14 +704,14 @@ func (m Model) updateSessionFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.sessionFormClient > 0 {
 				clientName = m.clientNames[m.sessionFormClient-1]
 			}
-			if clientName == "" {
-				m.message = "a client is required to start a session"
-				return m, nil
-			}
 			if _, err := m.service.Start(clientName, typeName, note); err != nil {
 				m.message = err.Error()
 			} else {
-				m.message = fmt.Sprintf("started session: @%s · %s", clientName, typeName)
+				if clientName != "" {
+					m.message = fmt.Sprintf("started session: @%s · %s", clientName, typeName)
+				} else {
+					m.message = fmt.Sprintf("started session: %s", typeName)
+				}
 			}
 			m.mode = modeMenu
 			m.input.SetValue("")
@@ -827,6 +889,437 @@ func (m Model) resumeSelectedPaused() (tea.Model, tea.Cmd) {
 	m.refreshDashboard()
 	m.syncTables()
 	return m, nil
+}
+
+// --- Report form (guided) ---
+
+var reportPeriodPresets = []string{
+	"This Month",
+	"Last 7 Days",
+	"Last 30 Days",
+	"Last 2 Weeks",
+	"This Year",
+	"Custom Range",
+}
+
+func (m *Model) enterReportForm() {
+	m.refreshDashboard()
+	m.mode = modeReportForm
+	m.reportFormStep = 0
+	m.reportFormClient = 0
+	m.reportFormPeriod = 0
+	m.input.SetValue("")
+	m.message = ""
+}
+
+func (m Model) updateReportFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.reportFormStep {
+	case 0: // select client
+		clientCount := len(m.clientNames) + 1 // +1 for "(all)"
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			return m, nil
+		case "up", "k":
+			if m.reportFormClient > 0 {
+				m.reportFormClient--
+			}
+			return m, nil
+		case "down", "j":
+			if m.reportFormClient < clientCount-1 {
+				m.reportFormClient++
+			}
+			return m, nil
+		case "enter":
+			m.reportFormStep = 1
+			m.reportFormPeriod = 0
+			return m, nil
+		}
+		return m, nil
+	case 1: // select period preset
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			return m, nil
+		case "up", "k":
+			if m.reportFormPeriod > 0 {
+				m.reportFormPeriod--
+			}
+			return m, nil
+		case "down", "j":
+			if m.reportFormPeriod < len(reportPeriodPresets)-1 {
+				m.reportFormPeriod++
+			}
+			return m, nil
+		case "enter":
+			if m.reportFormPeriod == 5 { // Custom Range
+				m.reportFormStep = 2
+				m.input.SetValue("")
+				m.input.Placeholder = "from date (YYYY-MM-DD)"
+				m.input.Focus()
+				return m, nil
+			}
+			return m.submitReportForm()
+		}
+		return m, nil
+	case 2: // custom from date
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(m.input.Value())
+			if val == "" {
+				m.message = "from date is required"
+				return m, nil
+			}
+			if _, err := time.Parse("2006-01-02", val); err != nil {
+				m.message = "invalid date format, use YYYY-MM-DD"
+				return m, nil
+			}
+			m.reportFormStep = 3
+			m.dashCustomFrom = val
+			m.input.SetValue("")
+			m.input.Placeholder = "to date (YYYY-MM-DD)"
+			m.input.Focus()
+			m.message = ""
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	case 3: // custom to date
+		switch msg.String() {
+		case "esc":
+			m.mode = modeMenu
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(m.input.Value())
+			if val == "" {
+				m.message = "to date is required"
+				return m, nil
+			}
+			if _, err := time.Parse("2006-01-02", val); err != nil {
+				m.message = "invalid date format, use YYYY-MM-DD"
+				return m, nil
+			}
+			m.dashCustomTo = val
+			return m.submitReportForm()
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+func (m Model) submitReportForm() (tea.Model, tea.Cmd) {
+	clientName := ""
+	if m.reportFormClient > 0 {
+		clientName = m.clientNames[m.reportFormClient-1]
+	}
+
+	var opts report.PeriodOptions
+	switch m.reportFormPeriod {
+	case 0: // This Month
+		now := time.Now().UTC()
+		from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		opts = report.PeriodOptions{
+			FromDate: from.Format("2006-01-02"),
+			ToDate:   now.Format("2006-01-02"),
+		}
+	case 1: // Last 7 Days
+		opts = report.PeriodOptions{LastDays: 7}
+	case 2: // Last 30 Days
+		opts = report.PeriodOptions{LastDays: 30}
+	case 3: // Last 2 Weeks
+		opts = report.PeriodOptions{LastWeeks: 2}
+	case 4: // This Year
+		opts = report.PeriodOptions{ThisYear: true}
+	case 5: // Custom Range
+		opts = report.PeriodOptions{FromDate: m.dashCustomFrom, ToDate: m.dashCustomTo}
+	}
+
+	from, to, err := report.ResolveDateRange(opts, time.Now())
+	if err != nil {
+		m.message = err.Error()
+		m.mode = modeMenu
+		m.input.SetValue("")
+		return m, nil
+	}
+	rows, summary, err := m.service.Report(clientName, from, to)
+	if err != nil {
+		m.message = err.Error()
+		m.mode = modeMenu
+		m.input.SetValue("")
+		return m, nil
+	}
+	m.reportRows = rows
+	m.reportTotal = summary.DurationSec
+	m.reportTimeTotal = summary.TimeBillableTotal
+	m.reportResTotal = summary.ResourceCostTotal
+	m.reportGrand = summary.MonetaryTotal
+	m.reportFrom = from
+	m.reportTo = to
+	m.reportClient = clientName
+	m.message = fmt.Sprintf("report loaded: %d sessions", len(rows))
+	m.mode = modeReportView
+	displayClient := clientName
+	if displayClient == "" {
+		displayClient = "all clients"
+	}
+	m.refreshReportViewport(displayClient)
+	m.input.SetValue("")
+	return m, nil
+}
+
+// --- Export path ---
+
+func (m Model) updateExportPathKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeReportView
+		m.input.SetValue("")
+		return m, nil
+	case "enter":
+		path := strings.TrimSpace(m.input.Value())
+		if path == "" {
+			m.message = "file path is required"
+			return m, nil
+		}
+		if strings.HasPrefix(path, "~/") {
+			home, err := os.UserHomeDir()
+			if err == nil {
+				path = home + path[1:]
+			}
+		}
+		branding, _ := m.store.GetBrandingSettings()
+		displayClient := m.reportClient
+		if displayClient == "" {
+			displayClient = "all clients"
+		}
+		summary := sqlite.ReportSummary{
+			DurationSec:       m.reportTotal,
+			TimeBillableTotal: m.reportTimeTotal,
+			ResourceCostTotal: m.reportResTotal,
+			MonetaryTotal:     m.reportGrand,
+		}
+		if err := export.WriteReportPDF(path, displayClient, m.reportFrom, m.reportTo, m.reportRows, summary, export.ReportBranding{
+			DisplayName: branding.DisplayName,
+			LogoPath:    branding.LogoPath,
+		}); err != nil {
+			m.message = err.Error()
+		} else {
+			m.message = fmt.Sprintf("exported PDF to %s", path)
+		}
+		m.mode = modeReportView
+		m.input.SetValue("")
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+}
+
+// --- Dashboard timeframe ---
+
+var dashTimeframeLabels = []string{
+	"This Month",
+	"Last 7 Days",
+	"Last 30 Days",
+	"This Year",
+	"Custom",
+}
+
+func (m *Model) enterDashboardTimeform() {
+	m.mode = modeDashboardTimeform
+	m.dashTimeformStep = 0
+	m.input.SetValue("")
+	m.input.Placeholder = "from date (YYYY-MM-DD)"
+	m.input.Focus()
+	m.message = ""
+}
+
+func (m Model) updateDashboardTimeformKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.dashTimeformStep {
+	case 0: // from date
+		switch msg.String() {
+		case "esc":
+			m.mode = modeDashboard
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(m.input.Value())
+			if val == "" {
+				m.message = "from date is required"
+				return m, nil
+			}
+			if _, err := time.Parse("2006-01-02", val); err != nil {
+				m.message = "invalid date format, use YYYY-MM-DD"
+				return m, nil
+			}
+			m.dashCustomFrom = val
+			m.dashTimeformStep = 1
+			m.input.SetValue("")
+			m.input.Placeholder = "to date (YYYY-MM-DD)"
+			m.input.Focus()
+			m.message = ""
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	case 1: // to date
+		switch msg.String() {
+		case "esc":
+			m.mode = modeDashboard
+			m.input.SetValue("")
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(m.input.Value())
+			if val == "" {
+				m.message = "to date is required"
+				return m, nil
+			}
+			if _, err := time.Parse("2006-01-02", val); err != nil {
+				m.message = "invalid date format, use YYYY-MM-DD"
+				return m, nil
+			}
+			m.dashCustomTo = val
+			m.dashTimeframe = 4
+			m.mode = modeDashboard
+			m.input.SetValue("")
+			m.refreshDashboard()
+			m.syncTables()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) dashboardTimeRange(now time.Time) (time.Time, time.Time) {
+	switch m.dashTimeframe {
+	case 1: // Last 7 Days
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
+		return start, now
+	case 2: // Last 30 Days
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -29)
+		return start, now
+	case 3: // This Year
+		start := time.Date(now.Year(), time.January, 1, 0, 0, 0, 0, time.UTC)
+		return start, now
+	case 4: // Custom
+		from, _ := time.Parse("2006-01-02", m.dashCustomFrom)
+		to, err := time.Parse("2006-01-02", m.dashCustomTo)
+		if err != nil {
+			to = now
+		}
+		to = to.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+		return from.UTC(), to.UTC()
+	default: // This Month
+		return currentMonthRange(now)
+	}
+}
+
+// --- Detail view (drill-down) ---
+
+func (m Model) openDetailView() (tea.Model, tea.Cmd) {
+	now := time.Now().UTC()
+	from, to := m.dashboardTimeRange(now)
+
+	switch m.focus {
+	case focusClients:
+		rows := m.clientsTable.Rows()
+		idx := m.clientsTable.Cursor()
+		if idx < 0 || idx >= len(rows) {
+			m.message = "select a client"
+			return m, nil
+		}
+		name := rows[idx][0]
+		sessions, err := m.store.ListSessionsByClient(name, from, to)
+		if err != nil {
+			m.message = err.Error()
+			return m, nil
+		}
+		m.detailName = name
+		m.detailByClient = true
+		m.detailSessions = sessions
+		m.syncDetailTable()
+		m.mode = modeDetailView
+		return m, nil
+	case focusTypes:
+		rows := m.typesTable.Rows()
+		idx := m.typesTable.Cursor()
+		if idx < 0 || idx >= len(rows) {
+			m.message = "select a type"
+			return m, nil
+		}
+		name := rows[idx][0]
+		sessions, err := m.store.ListSessionsByTrackingType(name, from, to)
+		if err != nil {
+			m.message = err.Error()
+			return m, nil
+		}
+		m.detailName = name
+		m.detailByClient = false
+		m.detailSessions = sessions
+		m.syncDetailTable()
+		m.mode = modeDetailView
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) syncDetailTable() {
+	rows := make([]table.Row, 0, len(m.detailSessions))
+	for _, d := range m.detailSessions {
+		label := d.TrackingTypeName
+		if m.detailByClient {
+			label = d.TrackingTypeName
+		} else {
+			label = d.ClientName
+		}
+		rows = append(rows, table.Row{
+			d.StartedAt.Local().Format("2006-01-02 15:04"),
+			label,
+			report.HumanDuration(d.DurationSec),
+			fmt.Sprintf("$%.2f", d.MonetaryTotal),
+			d.Note,
+		})
+	}
+	contentWidth := maxInt(40, m.width-4)
+	m.detailTable.SetColumns([]table.Column{
+		{Title: "Started", Width: 16},
+		{Title: "Type/Client", Width: 16},
+		{Title: "Duration", Width: 14},
+		{Title: "Total", Width: 12},
+		{Title: "Note", Width: maxInt(10, contentWidth-64)},
+	})
+	m.detailTable.SetRows(rows)
+	m.detailTable.SetHeight(maxInt(6, m.height-10))
+}
+
+func (m Model) updateDetailViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.mode = modeDashboard
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.detailTable, cmd = m.detailTable.Update(msg)
+	return m, cmd
 }
 
 func (m Model) startEditFromDashboard() (tea.Model, tea.Cmd) {
@@ -1133,7 +1626,7 @@ func (m *Model) refreshDashboard() {
 	m.clientNames = clients
 	m.typeDetails = typeDetails
 
-	from, to := currentMonthRange(time.Now().UTC())
+	from, to := m.dashboardTimeRange(time.Now().UTC())
 	clientTotals, err := m.store.DashboardTotalsByClient(from, to)
 	if err != nil {
 		m.message = err.Error()
@@ -1304,6 +1797,14 @@ func (m Model) View() string {
 		return m.viewEditType()
 	case modeSessionForm:
 		return m.viewSessionForm()
+	case modeReportForm:
+		return m.viewReportForm()
+	case modeDetailView:
+		return m.viewDetailView()
+	case modeExportPath:
+		return m.viewExportPath()
+	case modeDashboardTimeform:
+		return m.viewDashboardTimeform()
 	default:
 		return m.viewDashboard()
 	}
@@ -1317,7 +1818,32 @@ func (m Model) viewMenu() string {
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		activeLine = fmt.Sprintf("Active session: @%s · %s · %s", m.active.ClientName, m.active.TrackingTypeName, report.HumanDuration(elapsed))
+		clientLabel := m.active.ClientName
+		if clientLabel == "" {
+			clientLabel = "(no client)"
+		}
+		activeLine = fmt.Sprintf("Active session: @%s · %s · %s", clientLabel, m.active.TrackingTypeName, report.HumanDuration(elapsed))
+	}
+
+	resumeLabel := "Resume latest"
+	if len(m.paused) > 0 {
+		p := m.paused[0]
+		ago := time.Since(p.StoppedAt)
+		var agoStr string
+		if ago.Hours() >= 24 {
+			agoStr = fmt.Sprintf("%dd ago", int(ago.Hours()/24))
+		} else if ago.Hours() >= 1 {
+			agoStr = fmt.Sprintf("%dh ago", int(ago.Hours()))
+		} else {
+			agoStr = fmt.Sprintf("%dm ago", int(ago.Minutes()))
+		}
+		clientLabel := p.ClientName
+		if clientLabel == "(no client)" {
+			clientLabel = "no client"
+		}
+		resumeLabel = fmt.Sprintf("Resume latest (@%s · %s · %s)", clientLabel, p.TrackingTypeName, agoStr)
+	} else {
+		resumeLabel = "Resume latest (no paused sessions)"
 	}
 
 	menuItems := []string{
@@ -1325,7 +1851,7 @@ func (m Model) viewMenu() string {
 		"Add tracking type",
 		"Start session",
 		"Stop session",
-		"Resume latest",
+		resumeLabel,
 		"Open dashboard",
 		"Run report",
 	}
@@ -1400,8 +1926,13 @@ func (m Model) viewMenu() string {
 
 func (m Model) viewDashboard() string {
 	header := titleStyle.Render("🍁 Timmies") + "  " + mutedStyle.Render("dashboard")
-	monthLabel := time.Now().UTC().Format("January 2006")
-	header = lipgloss.JoinVertical(lipgloss.Left, header, mutedStyle.Render("Current-month totals: "+monthLabel))
+	timeframeLabel := dashTimeframeLabels[m.dashTimeframe]
+	if m.dashTimeframe == 0 {
+		timeframeLabel += " (" + time.Now().UTC().Format("January 2006") + ")"
+	} else if m.dashTimeframe == 4 && m.dashCustomFrom != "" {
+		timeframeLabel += " (" + m.dashCustomFrom + " → " + m.dashCustomTo + ")"
+	}
+	header = lipgloss.JoinVertical(lipgloss.Left, header, mutedStyle.Render("Timeframe: "+timeframeLabel+" · press f to cycle, F for custom"))
 
 	activeLine := "none"
 	if m.active != nil {
@@ -1409,7 +1940,11 @@ func (m Model) viewDashboard() string {
 		if elapsed < 0 {
 			elapsed = 0
 		}
-		activeLine = fmt.Sprintf("@%s · %s · %s · resources $%.2f · %s", m.active.ClientName, m.active.TrackingTypeName, report.HumanDuration(elapsed), m.activeResTotal, m.active.Note)
+		clientLabel := m.active.ClientName
+		if clientLabel == "" {
+			clientLabel = "(no client)"
+		}
+		activeLine = fmt.Sprintf("@%s · %s · %s · resources $%.2f · %s", clientLabel, m.active.TrackingTypeName, report.HumanDuration(elapsed), m.activeResTotal, m.active.Note)
 	}
 	activePanel := panelStyle.Width(maxInt(40, m.width-4)).Render(
 		titleStyle.Render("Active session") + "\n" + activeLine,
@@ -1712,9 +2247,151 @@ func (m Model) viewSessionForm() string {
 }
 
 func (m Model) viewReport() string {
-	header := titleStyle.Render("Timmies TUI report") + "\n" + mutedStyle.Render("Esc to dashboard · ↑/↓/PgUp/PgDn to scroll")
+	header := titleStyle.Render("Timmies TUI report") + "\n" + mutedStyle.Render("Esc to dashboard · ↑/↓/PgUp/PgDn to scroll · e to export PDF")
 	panel := panelStyle.Width(maxInt(40, m.width-4)).Render(m.reportViewport.View())
-	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, panel))
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + infoStyle.Render(m.message)
+	}
+	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, panel) + msg)
+}
+
+func (m Model) viewReportForm() string {
+	w := maxInt(40, m.width-4)
+
+	stepClient := formLabelStyle.Render("  1. Client")
+	stepPeriod := formLabelStyle.Render("  2. Period")
+	stepFrom := formLabelStyle.Render("  3. From date")
+	stepTo := formLabelStyle.Render("  4. To date")
+
+	var inputArea string
+
+	switch m.reportFormStep {
+	case 0:
+		stepClient = formActiveStyle.Render("▸ 1. Client")
+		options := []string{"(all)"}
+		for _, c := range m.clientNames {
+			options = append(options, "@"+c)
+		}
+		var lines []string
+		for i, opt := range options {
+			if i == m.reportFormClient {
+				lines = append(lines, formSelectedStyle.Render("  ▸ "+opt))
+			} else {
+				lines = append(lines, formLabelStyle.Render("    "+opt))
+			}
+		}
+		inputArea = strings.Join(lines, "\n") + "\n" +
+			mutedStyle.Render("↑/↓ to select · Enter to confirm")
+	case 1:
+		clientLabel := "(all)"
+		if m.reportFormClient > 0 {
+			clientLabel = "@" + m.clientNames[m.reportFormClient-1]
+		}
+		stepClient = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(clientLabel)
+		stepPeriod = formActiveStyle.Render("▸ 2. Period")
+		var lines []string
+		for i, opt := range reportPeriodPresets {
+			if i == m.reportFormPeriod {
+				lines = append(lines, formSelectedStyle.Render("  ▸ "+opt))
+			} else {
+				lines = append(lines, formLabelStyle.Render("    "+opt))
+			}
+		}
+		inputArea = strings.Join(lines, "\n") + "\n" +
+			mutedStyle.Render("↑/↓ to select · Enter to confirm")
+	case 2:
+		clientLabel := "(all)"
+		if m.reportFormClient > 0 {
+			clientLabel = "@" + m.clientNames[m.reportFormClient-1]
+		}
+		stepClient = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(clientLabel)
+		stepPeriod = formLabelStyle.Render("  2. ") + formAnswerStyle.Render("Custom Range")
+		stepFrom = formActiveStyle.Render("▸ 3. From date")
+		inputArea = m.input.View()
+	case 3:
+		clientLabel := "(all)"
+		if m.reportFormClient > 0 {
+			clientLabel = "@" + m.clientNames[m.reportFormClient-1]
+		}
+		stepClient = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(clientLabel)
+		stepPeriod = formLabelStyle.Render("  2. ") + formAnswerStyle.Render("Custom Range")
+		stepFrom = formLabelStyle.Render("  3. ") + formAnswerStyle.Render(m.dashCustomFrom)
+		stepTo = formActiveStyle.Render("▸ 4. To date")
+		inputArea = m.input.View()
+	}
+
+	steps := lipgloss.JoinVertical(lipgloss.Left, stepClient, stepPeriod, stepFrom, stepTo)
+
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Run report") + "\n\n" +
+			steps + "\n\n" +
+			inputArea + "\n" +
+			mutedStyle.Render("Esc to cancel"),
+	)
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel + msg)
+}
+
+func (m Model) viewDetailView() string {
+	label := "Client"
+	if !m.detailByClient {
+		label = "Tracking type"
+	}
+	header := titleStyle.Render(fmt.Sprintf("Sessions for %s: %s", label, m.detailName))
+	hint := mutedStyle.Render(fmt.Sprintf("%d sessions · Esc to dashboard", len(m.detailSessions)))
+	panel := panelStyle.Width(maxInt(40, m.width-4)).Render(m.detailTable.View())
+	return baseStyle.Render(lipgloss.JoinVertical(lipgloss.Left, renderTimmiesLogo(), header, hint, panel))
+}
+
+func (m Model) viewExportPath() string {
+	w := maxInt(40, m.width-4)
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Export report to PDF") + "\n\n" +
+			formActiveStyle.Render("Output file path:") + "\n" +
+			m.input.View() + "\n\n" +
+			mutedStyle.Render("Enter to export · Esc to cancel"),
+	)
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel + msg)
+}
+
+func (m Model) viewDashboardTimeform() string {
+	w := maxInt(40, m.width-4)
+
+	stepFrom := formLabelStyle.Render("  1. From date")
+	stepTo := formLabelStyle.Render("  2. To date")
+
+	var inputArea string
+	switch m.dashTimeformStep {
+	case 0:
+		stepFrom = formActiveStyle.Render("▸ 1. From date")
+		inputArea = m.input.View()
+	case 1:
+		stepFrom = formLabelStyle.Render("  1. ") + formAnswerStyle.Render(m.dashCustomFrom)
+		stepTo = formActiveStyle.Render("▸ 2. To date")
+		inputArea = m.input.View()
+	}
+
+	steps := lipgloss.JoinVertical(lipgloss.Left, stepFrom, stepTo)
+
+	panel := panelStyle.Width(w).Render(
+		titleStyle.Render("Custom dashboard timeframe") + "\n\n" +
+			steps + "\n\n" +
+			inputArea + "\n" +
+			mutedStyle.Render("Esc to cancel"),
+	)
+	msg := ""
+	if m.message != "" {
+		msg = "\n" + errStyle.Render(m.message)
+	}
+	return baseStyle.Render(renderTimmiesLogo() + "\n" + panel + msg)
 }
 
 func Run(store *sqlite.Store, svc *service.TimerService) error {

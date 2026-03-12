@@ -32,7 +32,7 @@ created_at TEXT NOT NULL
 
 CREATE TABLE IF NOT EXISTS sessions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-client_id INTEGER NOT NULL,
+client_id INTEGER,
 tracking_type_id INTEGER NOT NULL,
 note TEXT NOT NULL DEFAULT '',
 started_at TEXT NOT NULL,
@@ -159,6 +159,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureClientIDNullable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -202,6 +206,74 @@ func ensureTrackingTypeBillingColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureClientIDNullable(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	needsMigration := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "client_id" && notnull == 1 {
+			needsMigration = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !needsMigration {
+		return nil
+	}
+
+	if _, err := db.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return err
+	}
+	defer db.Exec("PRAGMA foreign_keys = ON")
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE sessions_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id INTEGER,
+			tracking_type_id INTEGER NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			started_at TEXT NOT NULL,
+			stopped_at TEXT,
+			duration_seconds INTEGER,
+			status TEXT NOT NULL CHECK(status IN ('active', 'stopped')),
+			created_at TEXT NOT NULL,
+			FOREIGN KEY(client_id) REFERENCES clients(id),
+			FOREIGN KEY(tracking_type_id) REFERENCES tracking_types(id)
+		)`,
+		`INSERT INTO sessions_new SELECT * FROM sessions`,
+		`DROP TABLE sessions`,
+		`ALTER TABLE sessions_new RENAME TO sessions`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_one_active ON sessions(status) WHERE status = 'active'`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_client_started ON sessions(client_id, started_at)`,
+	}
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("client_id migration: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -355,12 +427,16 @@ func (s *Store) StartSession(clientName, trackingTypeName, note string, startedA
 		return 0, fmt.Errorf("an active session already exists")
 	}
 
-	var clientID int64
-	if err = tx.QueryRow(`SELECT id FROM clients WHERE name = ?`, clientName).Scan(&clientID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, fmt.Errorf("client not found: %s", clientName)
+	var clientID sql.NullInt64
+	if clientName != "" {
+		var cid int64
+		if err = tx.QueryRow(`SELECT id FROM clients WHERE name = ?`, clientName).Scan(&cid); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, fmt.Errorf("client not found: %s", clientName)
+			}
+			return 0, err
 		}
-		return 0, err
+		clientID = sql.NullInt64{Int64: cid, Valid: true}
 	}
 
 	var trackingTypeID int64
@@ -425,10 +501,10 @@ WHERE id=?
 
 func (s *Store) GetActiveSession() (*SessionView, error) {
 	row := s.db.QueryRow(`
-SELECT s.id, c.name, t.name, s.note, s.started_at, s.stopped_at,
+SELECT s.id, COALESCE(c.name, ''), t.name, s.note, s.started_at, s.stopped_at,
        COALESCE(s.duration_seconds, 0), s.status
 FROM sessions s
-JOIN clients c ON c.id = s.client_id
+LEFT JOIN clients c ON c.id = s.client_id
 JOIN tracking_types t ON t.id = s.tracking_type_id
 WHERE s.status='active'
 LIMIT 1
@@ -473,7 +549,8 @@ func (s *Store) ResumeLatest(startedAt time.Time) (int64, error) {
 		return 0, fmt.Errorf("an active session already exists")
 	}
 
-	var clientID, trackingTypeID int64
+	var clientID sql.NullInt64
+	var trackingTypeID int64
 	var note string
 	if err = tx.QueryRow(`
 SELECT client_id, tracking_type_id, note
@@ -516,7 +593,8 @@ func (s *Store) ResumePausedSession(sessionID int64, startedAt time.Time) (int64
 		return 0, fmt.Errorf("an active session already exists")
 	}
 
-	var clientID, trackingTypeID int64
+	var clientID sql.NullInt64
+	var trackingTypeID int64
 	var note string
 	if err = tx.QueryRow(`
 SELECT client_id, tracking_type_id, note
@@ -590,22 +668,29 @@ ORDER BY created_at ASC, id ASC
 }
 
 func (s *Store) ReportByClient(clientName string, from, to time.Time) ([]ReportRow, ReportSummary, error) {
-	rows, err := s.db.Query(`
-SELECT s.id, c.name, t.name, t.is_billable, t.hourly_rate, s.note, s.started_at, s.stopped_at,
+	query := `
+SELECT s.id, COALESCE(c.name, '(no client)'), t.name, t.is_billable, t.hourly_rate, s.note, s.started_at, s.stopped_at,
        COALESCE(s.duration_seconds, 0), COALESCE(sr.resource_total, 0)
 FROM sessions s
-JOIN clients c ON c.id = s.client_id
+LEFT JOIN clients c ON c.id = s.client_id
 JOIN tracking_types t ON t.id = s.tracking_type_id
 LEFT JOIN (
 	SELECT session_id, SUM(cost_amount) AS resource_total
 	FROM session_resources
 	GROUP BY session_id
 ) sr ON sr.session_id = s.id
-WHERE c.name = ?
-  AND s.started_at >= ?
-  AND s.started_at <= ?
-ORDER BY s.started_at ASC
-`, clientName, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
+WHERE s.started_at >= ?
+  AND s.started_at <= ?`
+	args := []any{from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339)}
+	if clientName != "" {
+		query += `
+  AND (c.name = ? OR (? = '(no client)' AND s.client_id IS NULL))`
+		args = append(args, clientName, clientName)
+	}
+	query += `
+ORDER BY s.started_at ASC`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, ReportSummary{}, err
 	}
@@ -680,9 +765,9 @@ func (s *Store) DashboardTotalsByTrackingType(from, to time.Time) ([]DurationAmo
 
 func (s *Store) dashboardRows(from, to time.Time) (*sql.Rows, error) {
 	return s.db.Query(`
-SELECT c.name, t.name, t.is_billable, t.hourly_rate, s.started_at, s.stopped_at
+SELECT COALESCE(c.name, '(no client)'), t.name, t.is_billable, t.hourly_rate, s.started_at, s.stopped_at
 FROM sessions s
-JOIN clients c ON c.id = s.client_id
+LEFT JOIN clients c ON c.id = s.client_id
 JOIN tracking_types t ON t.id = s.tracking_type_id
 WHERE s.started_at >= ?
   AND s.started_at <= ?
@@ -761,9 +846,9 @@ func (s *Store) ListPausedSessions(limit int) ([]PausedSessionView, error) {
 		limit = 5
 	}
 	rows, err := s.db.Query(`
-SELECT s.id, c.name, t.name, s.note, s.stopped_at, COALESCE(s.duration_seconds, 0), COALESCE(sr.resource_total, 0)
+SELECT s.id, COALESCE(c.name, '(no client)'), t.name, s.note, s.stopped_at, COALESCE(s.duration_seconds, 0), COALESCE(sr.resource_total, 0)
 FROM sessions s
-JOIN clients c ON c.id = s.client_id
+LEFT JOIN clients c ON c.id = s.client_id
 JOIN tracking_types t ON t.id = s.tracking_type_id
 LEFT JOIN (
 	SELECT session_id, SUM(cost_amount) AS resource_total
@@ -792,6 +877,97 @@ LIMIT ?
 		}
 		p.StoppedAt = stoppedAt
 		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+type DetailSessionView struct {
+	ID                int64
+	ClientName        string
+	TrackingTypeName  string
+	Note              string
+	StartedAt         time.Time
+	StoppedAt         *time.Time
+	DurationSec       int64
+	IsBillable        bool
+	HourlyRate        float64
+	BillableAmount    float64
+	ResourceCostTotal float64
+	MonetaryTotal     float64
+}
+
+func (s *Store) ListSessionsByClient(clientName string, from, to time.Time) ([]DetailSessionView, error) {
+	var filter string
+	var args []any
+	if clientName == "(no client)" {
+		filter = "s.client_id IS NULL"
+	} else {
+		filter = "c.name = ?"
+		args = append(args, clientName)
+	}
+	args = append(args, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339))
+	return s.listDetailSessions(filter, args)
+}
+
+func (s *Store) ListSessionsByTrackingType(typeName string, from, to time.Time) ([]DetailSessionView, error) {
+	return s.listDetailSessions("t.name = ?", []any{typeName, from.UTC().Format(time.RFC3339), to.UTC().Format(time.RFC3339)})
+}
+
+func (s *Store) listDetailSessions(filter string, args []any) ([]DetailSessionView, error) {
+	query := fmt.Sprintf(`
+SELECT s.id, COALESCE(c.name, '(no client)'), t.name, s.note, s.started_at, s.stopped_at,
+       COALESCE(s.duration_seconds, 0), t.is_billable, t.hourly_rate, COALESCE(sr.resource_total, 0)
+FROM sessions s
+LEFT JOIN clients c ON c.id = s.client_id
+JOIN tracking_types t ON t.id = s.tracking_type_id
+LEFT JOIN (
+	SELECT session_id, SUM(cost_amount) AS resource_total
+	FROM session_resources
+	GROUP BY session_id
+) sr ON sr.session_id = s.id
+WHERE %s AND s.started_at >= ? AND s.started_at <= ?
+ORDER BY s.started_at DESC`, filter)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	var out []DetailSessionView
+	for rows.Next() {
+		var d DetailSessionView
+		var startedRaw string
+		var stoppedRaw sql.NullString
+		var isBillableInt int
+		if err := rows.Scan(&d.ID, &d.ClientName, &d.TrackingTypeName, &d.Note, &startedRaw, &stoppedRaw, &d.DurationSec, &isBillableInt, &d.HourlyRate, &d.ResourceCostTotal); err != nil {
+			return nil, err
+		}
+		d.IsBillable = isBillableInt == 1
+		start, err := time.Parse(time.RFC3339, startedRaw)
+		if err != nil {
+			return nil, err
+		}
+		d.StartedAt = start
+		if stoppedRaw.Valid {
+			t, err := time.Parse(time.RFC3339, stoppedRaw.String)
+			if err != nil {
+				return nil, err
+			}
+			d.StoppedAt = &t
+			d.DurationSec = int64(t.Sub(start).Seconds())
+		} else {
+			d.DurationSec = int64(now.Sub(start).Seconds())
+		}
+		if d.DurationSec < 0 {
+			d.DurationSec = 0
+		}
+		if d.IsBillable {
+			d.BillableAmount = (float64(d.DurationSec) / 3600.0) * d.HourlyRate
+		}
+		d.MonetaryTotal = d.BillableAmount + d.ResourceCostTotal
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }

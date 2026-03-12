@@ -342,13 +342,18 @@ func newRootCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start a new timer",
 		RunE: withDeps(func(_ *sqlstore.Store, svc *service.TimerService, cmd *cobra.Command, args []string) error {
-			if clientName == "" || trackingTypeName == "" {
-				return errors.New("--client and --type are required")
+			if trackingTypeName == "" {
+				return errors.New("--type is required")
 			}
+			clientName = strings.TrimPrefix(clientName, "@")
 			if _, err := svc.Start(clientName, trackingTypeName, note); err != nil {
 				return err
 			}
-			fmt.Printf("started session for @%s (%s)\n", clientName, trackingTypeName)
+			if clientName != "" {
+				fmt.Printf("started session for @%s (%s)\n", clientName, trackingTypeName)
+			} else {
+				fmt.Printf("started session (%s)\n", trackingTypeName)
+			}
 			return nil
 		}),
 	}
@@ -512,9 +517,6 @@ func newRootCmd() *cobra.Command {
 			"  timmies report --client @acme --this-year",
 		}, "\n"),
 		RunE: withDeps(func(_ *sqlstore.Store, svc *service.TimerService, cmd *cobra.Command, args []string) error {
-			if reportClient == "" {
-				return errors.New("--client is required")
-			}
 			reportClient = strings.TrimPrefix(reportClient, "@")
 			from, to, err := report.ResolveDateRange(report.PeriodOptions{
 				FromDate:  fromDate,
@@ -530,7 +532,11 @@ func newRootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("report for @%s (%s -> %s)\n", reportClient, from.Format("2006-01-02"), to.Format("2006-01-02"))
+			reportLabel := "all clients"
+			if reportClient != "" {
+				reportLabel = "@" + reportClient
+			}
+			fmt.Printf("report for %s (%s -> %s)\n", reportLabel, from.Format("2006-01-02"), to.Format("2006-01-02"))
 			for _, r := range rows {
 				fmt.Printf(
 					"- %s | %s | %s | billable:%t rate:$%.2f/h time:$%.2f resources:$%.2f total:$%.2f | %s\n",
@@ -569,8 +575,8 @@ func newRootCmd() *cobra.Command {
 		Use:   "csv",
 		Short: "Export report to CSV",
 		RunE: withDeps(func(store *sqlstore.Store, svc *service.TimerService, cmd *cobra.Command, args []string) error {
-			if reportClient == "" || exportOut == "" {
-				return errors.New("--client and --out are required")
+			if exportOut == "" {
+				return errors.New("--out is required")
 			}
 			reportClient = strings.TrimPrefix(reportClient, "@")
 			from, to, err := report.ResolveDateRange(report.PeriodOptions{
@@ -598,8 +604,8 @@ func newRootCmd() *cobra.Command {
 		Use:   "pdf",
 		Short: "Export report to PDF",
 		RunE: withDeps(func(store *sqlstore.Store, svc *service.TimerService, cmd *cobra.Command, args []string) error {
-			if reportClient == "" || exportOut == "" {
-				return errors.New("--client and --out are required")
+			if exportOut == "" {
+				return errors.New("--out is required")
 			}
 			reportClient = strings.TrimPrefix(reportClient, "@")
 			from, to, err := report.ResolveDateRange(report.PeriodOptions{
